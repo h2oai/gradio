@@ -29,7 +29,15 @@ import fastapi
 import httpx
 import markupsafe
 import orjson
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    WebSocket,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -46,6 +54,7 @@ from jinja2.exceptions import TemplateNotFound
 from multipart.multipart import parse_options_header
 from starlette.background import BackgroundTask
 from starlette.responses import RedirectResponse, StreamingResponse
+from starlette.websockets import WebSocketDisconnect
 
 import gradio
 from gradio import ranged_response, route_utils, utils, wasm_utils
@@ -206,6 +215,28 @@ class App(FastAPI):
                 allow_methods=["*"],
                 allow_headers=["*"],
             )
+
+        @app.websocket("/ws")
+        async def websocket_endpoint(
+            websocket: WebSocket, session_hash: str = Query(default=None)
+        ):
+            await websocket.accept()
+            print("Client Connected: %s" % session_hash, flush=True)
+            try:
+                while True:
+                    # You can also process incoming messages here
+                    data = await websocket.receive_text()
+                    print(f"Message from client: {data}")
+            except WebSocketDisconnect:
+                from gradio.components import State  # fmt: skip
+
+                states = app.state_holder.session_data[session_hash]
+                for k, state_data in states._data.items():
+                    state = states.blocks.blocks[k]
+                    if isinstance(state, State) and state.callback is not None:
+                        state.callback(state_data)
+                app.state_holder.session_data.pop(session_hash)
+            print("Client disconnected: %s" % session_hash, flush=True)
 
         @app.get("/user")
         @app.get("/user/")
