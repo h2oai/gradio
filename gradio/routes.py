@@ -230,13 +230,14 @@ class App(FastAPI):
                     print(f"Message from client: {data}")
             except WebSocketDisconnect:
                 from gradio.components import State  # fmt: skip
-
-                states = app.state_holder.session_data[session_hash]
-                for k, state_data in states._data.items():
-                    state = states.blocks.blocks[k]
-                    if isinstance(state, State) and state.callback is not None:
-                        state.callback(state_data)
-                app.state_holder.session_data.pop(session_hash)
+                if session_hash in app.state_holder.session_data:
+                    states = app.state_holder.session_data.get(session_hash)
+                    if states is not None:
+                        for k, state_data in states._data.items():
+                            state = states.blocks.blocks[k]
+                            if isinstance(state, State) and state.callback is not None:
+                                state.callback(state_data)
+                        app.state_holder.session_data.pop(session_hash)
             print("Client disconnected: %s" % session_hash, flush=True)
 
         @app.get("/user")
