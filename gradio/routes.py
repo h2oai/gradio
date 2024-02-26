@@ -248,6 +248,14 @@ class App(FastAPI):
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
             )
 
+        @app.get("/logout")
+        def logout():
+            response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie(key=f"access-token")
+            response.delete_cookie(key=f"access-token-unsecure")
+            print("Logout user!")
+            return response
+
         @app.get("/token")
         @app.get("/token/")
         def get_token(request: fastapi.Request) -> dict:
