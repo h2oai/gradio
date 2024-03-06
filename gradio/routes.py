@@ -42,6 +42,7 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Response,
     Query,
     WebSocket,
     status,
@@ -281,14 +282,6 @@ class App(FastAPI):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
             )
-
-        @app.get("/logout")
-        def logout():
-            response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-            response.delete_cookie(key=f"access-token")
-            response.delete_cookie(key=f"access-token-unsecure")
-            print("Logout user!")
-            return response
 
         @app.get("/token")
         @app.get("/token/")
