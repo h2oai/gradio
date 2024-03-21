@@ -8,6 +8,7 @@ from typing import Any, Callable, Literal
 
 import httpx
 import numpy as np
+from gradio_client import file
 from gradio_client import utils as client_utils
 from gradio_client.documentation import document
 
@@ -182,7 +183,9 @@ class Audio(
         )
 
     def example_payload(self) -> Any:
-        return "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav"
+        return file(
+            "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav"
+        )
 
     def example_value(self) -> Any:
         return "https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav"
@@ -299,6 +302,7 @@ class Audio(
                     )
                 else:
                     binary_data = binary_data[44:]
+            output_file["url"] = f"stream/{output_id}"
         return binary_data, output_file
 
     def process_example(

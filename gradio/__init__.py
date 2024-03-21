@@ -44,6 +44,7 @@ from gradio.components import (
     LogoutButton,
     Markdown,
     Model3D,
+    MultimodalTextbox,
     Number,
     ParamViewer,
     Plot,
@@ -97,7 +98,7 @@ from gradio.templates import (
     TextArea,
 )
 from gradio.themes import Base as Theme
-from gradio.utils import get_package_version, is_h2oai_version
+from gradio.utils import get_package_version, set_static_paths, is_h2oai_version
 
 __version__ = get_package_version()
 
