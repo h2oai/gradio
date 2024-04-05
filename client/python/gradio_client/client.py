@@ -211,7 +211,7 @@ class Client:
                     headers=self.headers,
                     cookies=self.cookies,
                     verify=self.ssl_verify,
-                    timeout=20,
+                    timeout=60,
                 ) as response:
                     for _ in response.iter_lines():
                         if self._refresh_heartbeat.is_set():

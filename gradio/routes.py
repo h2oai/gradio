@@ -633,7 +633,8 @@ class App(FastAPI):
             """Clients make a persistent connection to this endpoint to keep the session alive.
             When the client disconnects, the session state is deleted.
             """
-            heartbeat_rate = 0.25 if os.getenv("GRADIO_IS_E2E_TEST", None) else 15
+            heartbeat_rate = 0.25 if os.getenv("GRADIO_IS_E2E_TEST", None) else float(os.getenv("GRADIO_HEARTBEAT_RATE", str(120.0)))
+            heartbeat_sleep = float(os.getenv("GRADIO_HEARTBEAT_RATE", str(10.0)))
 
             async def wait():
                 await asyncio.sleep(heartbeat_rate)
@@ -641,7 +642,7 @@ class App(FastAPI):
 
             async def stop_stream():
                 while app.get_blocks().is_running:
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(heartbeat_sleep)
                 return "stop"
 
             async def iterator():

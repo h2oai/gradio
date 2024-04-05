@@ -74,7 +74,7 @@ class SessionState:
         # When a session is closed, the state is stored for an hour to give the user time to reopen the session.
         # During testing we set to a lower value to be able to test
         self.STATE_TTL_WHEN_CLOSED = (
-            1 if os.getenv("GRADIO_IS_E2E_TEST", None) else 3600
+            1 if os.getenv("GRADIO_IS_E2E_TEST", None) else float(os.getenv("GRADIO_TTL", str(5*60.0)))
         )
 
     def __getitem__(self, key: int) -> Any:
