@@ -545,6 +545,7 @@ class Client:
                 headers=self.headers,
                 cookies=self.cookies,
                 verify=self.ssl_verify,
+                timeout=60,
             )
             if r.is_success:
                 info = r.json()
@@ -812,6 +813,7 @@ class Client:
             urllib.parse.urljoin(self.src, utils.LOGIN_URL),
             data={"username": auth[0], "password": auth[1]},
             verify=self.ssl_verify,
+            timeout=60,
         )
         if not resp.is_success:
             if resp.status_code == 401:
@@ -830,6 +832,7 @@ class Client:
             headers=self.headers,
             cookies=self.cookies,
             verify=self.ssl_verify,
+            timeout=60,
         )
         if r.is_success:
             return r.json()
@@ -843,6 +846,7 @@ class Client:
                 headers=self.headers,
                 cookies=self.cookies,
                 verify=self.ssl_verify,
+                timeout=60,
             )
             if not r.is_success:
                 raise ValueError(f"Could not fetch config for {self.src}")
@@ -1236,6 +1240,7 @@ class Endpoint:
                     cookies=self.client.cookies,
                     verify=self.client.ssl_verify,
                     files=files,
+                    timeout=60,
                 )
             r.raise_for_status()
             result = r.json()
