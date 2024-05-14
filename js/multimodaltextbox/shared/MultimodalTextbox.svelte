@@ -9,8 +9,8 @@
 	import { BlockTitle } from "@gradio/atoms";
 	import { Upload } from "@gradio/upload";
 	import { Image } from "@gradio/image/shared";
-	import type { FileData, upload } from "@gradio/client";
-	import { Clear, File, Music, Video, Send } from "@gradio/icons";
+	import type { FileData, Client } from "@gradio/client";
+	import { Clear, File, Music, Paperclip, Video, Send } from "@gradio/icons";
 	import type { SelectData } from "@gradio/utils";
 
 	export let value: { text: string; files: FileData[] } = {
@@ -34,6 +34,9 @@
 	export let autoscroll = true;
 	export let root: string;
 	export let file_types: string[] | null = null;
+	export let max_file_size: number | null = null;
+	export let upload: Client["upload"];
+	export let stream_handler: Client["stream"];
 
 	let upload_component: Upload;
 	let hidden_upload: HTMLInputElement;
@@ -176,6 +179,7 @@
 
 	function handle_upload_click(): void {
 		if (hidden_upload) {
+			hidden_upload.value = "";
 			hidden_upload.click();
 		}
 	}
@@ -206,11 +210,15 @@
 			on:load={handle_upload}
 			filetype={accept_file_types}
 			{root}
+			{max_file_size}
 			bind:dragging
 			bind:uploading
 			show_progress={false}
 			disable_click={true}
 			bind:hidden_upload
+			on:error
+			{upload}
+			{stream_handler}
 		>
 			{#if submit_btn !== null}
 				<button class:disabled class="submit-button" on:click={handle_submit}
@@ -221,8 +229,10 @@
 					><Send /></button
 				>
 			{/if}
-			<button class:disabled class="plus-button" on:click={handle_upload_click}
-				>+</button
+			<button
+				data-testid="upload-button"
+				class="upload-button"
+				on:click={handle_upload_click}><Paperclip /></button
 			>
 			{#if value.files.length > 0 || uploading}
 				<div
@@ -329,7 +339,7 @@
 		color: var(--input-placeholder-color);
 	}
 
-	.plus-button,
+	.upload-button,
 	.submit-button {
 		position: absolute;
 		background: var(--button-secondary-background-fill);
@@ -345,12 +355,12 @@
 		bottom: 15px;
 	}
 
-	.plus-button:hover,
+	.upload-button:hover,
 	.submit-button:hover {
 		background: var(--button-secondary-background-fill-hover);
 	}
 
-	.plus-button:active,
+	.upload-button:active,
 	.submit-button:active {
 		box-shadow: var(--button-shadow-active);
 	}
@@ -369,9 +379,15 @@
 		padding-top: 2px;
 	}
 
-	.plus-button {
+	.upload-button {
 		left: 10px;
 		margin-right: 5px;
+	}
+
+	.upload-button :global(svg) {
+		height: 23px;
+		width: 23px;
+		padding-left: 7px;
 	}
 
 	.loader {

@@ -1,9 +1,11 @@
 """The main Client class for the Python client."""
+
 from __future__ import annotations
 
 import concurrent.futures
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -17,6 +19,7 @@ import warnings
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Literal
@@ -35,7 +38,7 @@ from gradio_client import utils
 from gradio_client.compatibility import EndpointV3Compatibility
 from gradio_client.data_classes import ParameterInfo
 from gradio_client.documentation import document
-from gradio_client.exceptions import AuthenticationError
+from gradio_client.exceptions import AppError, AuthenticationError
 from gradio_client.utils import (
     Communicator,
     JobStatus,
@@ -152,9 +155,9 @@ class Client:
             self._login(auth)
 
         self.config = self._get_config()
-        self.protocol: Literal[
-            "ws", "sse", "sse_v1", "sse_v2", "sse_v2.1"
-        ] = self.config.get("protocol", "ws")
+        self.protocol: Literal["ws", "sse", "sse_v1", "sse_v2", "sse_v2.1"] = (
+            self.config.get("protocol", "ws")
+        )
         self.api_url = urllib.parse.urljoin(self.src, utils.API_URL)
         self.sse_url = urllib.parse.urljoin(
             self.src, utils.SSE_URL_V0 if self.protocol == "sse" else utils.SSE_URL
@@ -222,21 +225,21 @@ class Client:
             except httpx.TransportError:
                 return
 
-    async def stream_messages(
+    def stream_messages(
         self, protocol: Literal["sse_v1", "sse_v2", "sse_v2.1", "sse_v3"]
     ) -> None:
         try:
-            async with httpx.AsyncClient(
+            with httpx.Client(
                 timeout=httpx.Timeout(timeout=None), verify=self.ssl_verify
             ) as client:
-                async with client.stream(
+                with client.stream(
                     "GET",
                     self.sse_url,
                     params={"session_hash": self.session_hash},
                     headers=self.headers,
                     cookies=self.cookies,
                 ) as response:
-                    async for line in response.aiter_lines():
+                    for line in response.iter_lines():
                         line = line.rstrip("\n")
                         if not len(line):
                             continue
@@ -244,7 +247,9 @@ class Client:
                             resp = json.loads(line[5:])
                             if resp["msg"] == ServerMessage.heartbeat:
                                 continue
-                            elif resp["msg"] == ServerMessage.server_stopped:
+                            elif (
+                                resp.get("message", "") == ServerMessage.server_stopped
+                            ):
                                 for (
                                     pending_messages
                                 ) in self.pending_messages_per_event.values():
@@ -268,19 +273,24 @@ class Client:
                         else:
                             raise ValueError(f"Unexpected SSE line: '{line}'")
         except BaseException as e:
+            # If the job is cancelled the stream will close so we
+            # should not raise this httpx exception that comes from the
+            # stream abruply closing
+            if isinstance(e, httpx.RemoteProtocolError):
+                return
             import traceback
 
             traceback.print_exc()
             raise e
 
-    async def send_data(self, data, hash_data, protocol):
-        async with httpx.AsyncClient(verify=self.ssl_verify) as client:
-            req = await client.post(
-                self.sse_data_url,
-                json={**data, **hash_data},
-                headers=self.headers,
-                cookies=self.cookies,
-            )
+    def send_data(self, data, hash_data, protocol):
+        req = httpx.post(
+            self.sse_data_url,
+            json={**data, **hash_data},
+            headers=self.headers,
+            cookies=self.cookies,
+            verify=self.ssl_verify,
+        )
         if req.status_code == 503:
             raise QueueError("Queue is full! Please try again.")
         req.raise_for_status()
@@ -291,7 +301,7 @@ class Client:
             self.stream_open = True
 
             def open_stream():
-                return utils.synchronize_async(self.stream_messages, protocol)
+                return self.stream_messages(protocol)
 
             def close_stream(_):
                 self.stream_open = False
@@ -494,6 +504,7 @@ class Client:
             >> 9.0
         """
         inferred_fn_index = self._infer_fn_index(api_name, fn_index)
+
         endpoint = self.endpoints[inferred_fn_index]
 
         if isinstance(endpoint, Endpoint):
@@ -512,8 +523,14 @@ class Client:
         end_to_end_fn = endpoint.make_end_to_end_fn(helper)
         future = self.executor.submit(end_to_end_fn, *args)
 
+        cancel_fn = endpoint.make_cancel(helper)
+
         job = Job(
-            future, communicator=helper, verbose=self.verbose, space_id=self.space_id
+            future,
+            communicator=helper,
+            verbose=self.verbose,
+            space_id=self.space_id,
+            _cancel_fn=cancel_fn,
         )
 
         if result_callbacks:
@@ -1106,6 +1123,78 @@ class Endpoint:
 
         return _inner
 
+    def make_cancel(
+        self,
+        helper: Communicator | None,
+    ):
+        if helper is None:
+            return
+        if self.client.app_version > version.Version("4.29.0"):
+            url = urllib.parse.urljoin(self.client.src, utils.CANCEL_URL)
+
+            # The event_id won't be set on the helper until later
+            # so need to create the data in a function that's run at cancel time
+            def post_data():
+                return {
+                    "fn_index": self.fn_index,
+                    "session_hash": self.client.session_hash,
+                    "event_id": helper.event_id,
+                }
+
+            cancel_msg = None
+            cancellable = True
+        else:
+            candidates: list[tuple[int, list[int]]] = []
+            for i, dep in enumerate(self.client.config["dependencies"]):
+                if self.fn_index in dep["cancels"]:
+                    candidates.append(
+                        (i, [d for d in dep["cancels"] if d != self.fn_index])
+                    )
+
+            fn_index, other_cancelled = (
+                min(candidates, key=lambda x: len(x[1])) if candidates else (None, None)
+            )
+            cancellable = fn_index is not None
+            cancel_msg = None
+            if cancellable and other_cancelled:
+                other_api_names = [
+                    "/" + self.client.config["dependencies"][i].get("api_name")
+                    for i in other_cancelled
+                ]
+                cancel_msg = (
+                    f"Cancelled this job will also cancel any jobs for {', '.join(other_api_names)} "
+                    "that are currently running."
+                )
+            elif not cancellable:
+                cancel_msg = (
+                    "Cancelling this job will not stop the server from running. "
+                    "To fix this, an event must be added to the upstream app that explicitly cancels this one or "
+                    "the upstream app must be running Gradio 4.29.0 and greater."
+                )
+
+            def post_data():
+                return {
+                    "data": [],
+                    "fn_index": fn_index,
+                    "session_hash": self.client.session_hash,
+                }
+
+            url = self.client.api_url
+
+        def _cancel():
+            if cancel_msg:
+                warnings.warn(cancel_msg)
+            if cancellable:
+                httpx.post(
+                    url,
+                    json=post_data(),
+                    headers=self.client.headers,
+                    cookies=self.client.cookies,
+                    verify=self.client.ssl_verify,
+                )
+
+        return _cancel
+
     def make_predict(self, helper: Communicator | None = None):
         def _predict(*data) -> tuple:
             data = {
@@ -1120,23 +1209,27 @@ class Endpoint:
             }
 
             if self.protocol == "sse":
-                result = utils.synchronize_async(
-                    self._sse_fn_v0, data, hash_data, helper
-                )
+                result = self._sse_fn_v0(data, hash_data, helper)  # type: ignore
             elif self.protocol in ("sse_v1", "sse_v2", "sse_v2.1", "sse_v3"):
-                event_id = utils.synchronize_async(
-                    self.client.send_data, data, hash_data, self.protocol
-                )
+                event_id = self.client.send_data(data, hash_data, self.protocol)
                 self.client.pending_event_ids.add(event_id)
                 self.client.pending_messages_per_event[event_id] = []
-                result = utils.synchronize_async(
-                    self._sse_fn_v1plus, helper, event_id, self.protocol
-                )
+                helper.event_id = event_id
+                result = self._sse_fn_v1plus(helper, event_id, self.protocol)
             else:
                 raise ValueError(f"Unsupported protocol: {self.protocol}")
 
             if "error" in result:
-                raise ValueError(result["error"])
+                if result["error"] is None:
+                    raise AppError(
+                        "The upstream Gradio app has raised an exception but has not enabled "
+                        "verbose error reporting. To enable, set show_error=True in launch()."
+                    )
+                else:
+                    raise AppError(
+                        "The upstream Gradio app has raised an exception: "
+                        + result["error"]
+                    )
 
             try:
                 output = result["data"]
@@ -1173,13 +1266,17 @@ class Endpoint:
             if self.client.upload_files and self.input_component_types[i].value_is_file:
                 d = utils.traverse(
                     d,
-                    self._upload_file,
+                    partial(self._upload_file, data_index=i),
                     lambda f: utils.is_filepath(f)
                     or utils.is_file_obj_with_meta(f)
                     or utils.is_http_url_like(f),
                 )
             elif not self.client.upload_files:
-                d = utils.traverse(d, self._upload_file, utils.is_file_obj_with_meta)
+                d = utils.traverse(
+                    d,
+                    partial(self._upload_file, data_index=i),
+                    utils.is_file_obj_with_meta,
+                )
             data_.append(d)
         return tuple(data_)
 
@@ -1221,7 +1318,7 @@ class Endpoint:
         else:
             return data
 
-    def _upload_file(self, f: str | dict) -> dict[str, str]:
+    def _upload_file(self, f: str | dict, data_index: int) -> dict[str, str]:
         if isinstance(f, str):
             warnings.warn(
                 f'The Client is treating: "{f}" as a file path. In future versions, this behavior will not happen automatically. '
@@ -1232,6 +1329,22 @@ class Endpoint:
         else:
             file_path = f["path"]
         if not utils.is_http_url_like(file_path):
+            component_id = self.dependency["inputs"][data_index]
+            component_config = next(
+                (
+                    c
+                    for c in self.client.config["components"]
+                    if c["id"] == component_id
+                ),
+                {},
+            )
+            max_file_size = self.client.config.get("max_file_size", None)
+            max_file_size = math.inf if max_file_size is None else max_file_size
+            if os.path.getsize(file_path) > max_file_size:
+                raise ValueError(
+                    f"File {file_path} exceeds the maximum file size of {max_file_size} bytes "
+                    f"set in {component_config.get('label', '') + ''} component."
+                )
             with open(file_path, "rb") as f:
                 files = [("files", (Path(file_path).name, f))]
                 r = httpx.post(
@@ -1276,11 +1389,11 @@ class Endpoint:
         shutil.move(temp_dir / Path(url_path).name, dest)
         return str(dest.resolve())
 
-    async def _sse_fn_v0(self, data: dict, hash_data: dict, helper: Communicator):
-        async with httpx.AsyncClient(
+    def _sse_fn_v0(self, data: dict, hash_data: dict, helper: Communicator):
+        with httpx.Client(
             timeout=httpx.Timeout(timeout=None), verify=self.client.ssl_verify
         ) as client:
-            return await utils.get_pred_from_sse_v0(
+            return utils.get_pred_from_sse_v0(
                 client,
                 data,
                 hash_data,
@@ -1290,15 +1403,16 @@ class Endpoint:
                 self.client.headers,
                 self.client.cookies,
                 self.client.ssl_verify,
+                self.client.executor,
             )
 
-    async def _sse_fn_v1plus(
+    def _sse_fn_v1plus(
         self,
         helper: Communicator,
         event_id: str,
         protocol: Literal["sse_v1", "sse_v2", "sse_v2.1", "sse_v3"],
     ):
-        return await utils.get_pred_from_sse_v1plus(
+        return utils.get_pred_from_sse_v1plus(
             helper,
             self.client.headers,
             self.client.cookies,
@@ -1306,6 +1420,7 @@ class Endpoint:
             event_id,
             protocol,
             self.client.ssl_verify,
+            self.client.executor,
         )
 
 
@@ -1327,6 +1442,7 @@ class Job(Future):
         communicator: Communicator | None = None,
         verbose: bool = True,
         space_id: str | None = None,
+        _cancel_fn: Callable[[], None] | None = None,
     ):
         """
         Parameters:
@@ -1340,6 +1456,7 @@ class Job(Future):
         self._counter = 0
         self.verbose = verbose
         self.space_id = space_id
+        self.cancel_fn = _cancel_fn
 
     def __iter__(self) -> Job:
         return self
@@ -1478,10 +1595,6 @@ class Job(Future):
                     )
                 return self.communicator.job.latest_status
 
-    def __getattr__(self, name):
-        """Forwards any properties to the Future class."""
-        return getattr(self.future, name)
-
     def cancel(self) -> bool:
         """Cancels the job as best as possible.
 
@@ -1500,5 +1613,11 @@ class Job(Future):
         if self.communicator:
             with self.communicator.lock:
                 self.communicator.should_cancel = True
+                if self.cancel_fn:
+                    self.cancel_fn()
                 return True
         return self.future.cancel()
+
+    def __getattr__(self, name):
+        """Forwards any properties to the Future class."""
+        return getattr(self.future, name)

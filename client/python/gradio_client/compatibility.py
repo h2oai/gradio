@@ -1,4 +1,5 @@
-""" This module contains the EndpointV3Compatibility class, which is used to connect to Gradio apps running 3.x.x versions of Gradio."""
+"""This module contains the EndpointV3Compatibility class, which is used to connect to Gradio apps running 3.x.x versions of Gradio."""
+
 from __future__ import annotations
 
 import json
@@ -73,6 +74,9 @@ class EndpointV3Compatibility:
             return predictions
 
         return _inner
+
+    def make_cancel(self, helper: Communicator | None = None):  # noqa: ARG002 (needed so that both endpoints classes have the same api)
+        return None
 
     def make_predict(self, helper: Communicator | None = None):
         def _predict(*data) -> tuple:

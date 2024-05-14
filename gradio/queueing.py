@@ -88,9 +88,9 @@ class Queue:
         block_fns: list[BlockFunction],
         default_concurrency_limit: int | None | Literal["not_set"] = "not_set",
     ):
-        self.pending_messages_per_session: LRUCache[
-            str, ThreadQueue[EventMessage]
-        ] = LRUCache(2000)
+        self.pending_messages_per_session: LRUCache[str, ThreadQueue[EventMessage]] = (
+            LRUCache(2000)
+        )
         self.pending_event_ids_session: dict[str, set[str]] = {}
         self.pending_message_lock = safe_get_lock()
         self.event_queue_per_concurrency_id: dict[str, EventQueue] = {}
@@ -302,6 +302,7 @@ class Queue:
                         process_event_task,
                         events[0].session_hash,
                         events[0].fn_index,
+                        events[0]._id,
                         batch,
                     )
 

@@ -82,13 +82,26 @@ class TestBlocksMethods:
             gr.Image(height=54, width=240)
 
         config1 = demo1.get_config_file()
-        demo2 = gr.Blocks.from_config(config1, [update], "https://fake.hf.space")
+        demo2 = gr.Blocks.from_config(config1, [update], fake_url)
 
         for component in config1["components"]:
             component["props"]["proxy_url"] = f"{fake_url}/"
         config2 = demo2.get_config_file()
 
         assert assert_configs_are_equivalent_besides_ids(config1, config2)
+
+    def test_load_config_with_sucess(self):
+        fake_url = "https://fake.hf.space"
+        with gr.Blocks() as demo1:
+            t1 = gr.Textbox()
+            t2 = gr.Textbox()
+            t3 = gr.Textbox()
+            t4 = gr.Textbox()
+            t1.change(lambda x: x, t1, t2).then(lambda x: x, t2, t3).success(
+                lambda x: x, t3, t4
+            )
+        config1 = demo1.get_config_file()
+        gr.Blocks.from_config(config1, [lambda x: x] * 3, fake_url)
 
     def test_partial_fn_in_config(self):
         def greet(name, formatter):
@@ -492,7 +505,9 @@ class TestComponentsInBlocks:
         with gr.Blocks() as demo:
             for component in io_components:
                 components.append(component(value=lambda: None, every=1))
-        assert all(comp.load_event in demo.dependencies for comp in components)
+        assert all(
+            comp.load_event in demo.config["dependencies"] for comp in components
+        )
 
 
 class TestBlocksPostprocessing:
@@ -1267,7 +1282,7 @@ class TestCancel:
 
         cancel_fun = demo.fns[-1].fn
         task = asyncio.create_task(long_job())
-        task.set_name("foo_0")
+        task.set_name("foo_0<gradio-sep>event")
         # If cancel_fun didn't cancel long_job the message would be printed to the console
         # The test would also take 10 seconds
         await asyncio.gather(task, cancel_fun("foo"), return_exceptions=True)
@@ -1299,7 +1314,7 @@ class TestCancel:
         cancel_fun = demo.fns[-1].fn
 
         task = asyncio.create_task(long_job())
-        task.set_name("foo_1")
+        task.set_name("foo_1<gradio-sep>event")
         await asyncio.gather(task, cancel_fun("foo"), return_exceptions=True)
         captured = capsys.readouterr()
         assert "HELLO FROM LONG JOB" not in captured.out
@@ -1670,7 +1685,7 @@ def test_emptry_string_api_name_gets_set_as_fn_name():
         t2 = gr.Textbox()
         t1.change(test_fn, t1, t2, api_name="")
 
-    assert demo.dependencies[0]["api_name"] == "test_fn"
+    assert demo.fns[0].api_name == "test_fn"
 
 
 @pytest.mark.asyncio
@@ -1740,7 +1755,7 @@ def test_static_files_multiple_apps(gradio_temp_dir):
 
 
 def test_time_to_live_and_delete_callback_for_state(capsys, monkeypatch):
-    monkeypatch.setenv("GRADIO_IS_E2E_TEST", 1)
+    monkeypatch.setenv("GRADIO_IS_E2E_TEST", "1")
 
     def test_fn(x):
         return x + 1, x + 1
@@ -1775,6 +1790,8 @@ def test_time_to_live_and_delete_callback_for_state(capsys, monkeypatch):
         assert "deleted 2" in captured.out
         assert "deleted 3" in captured.out
         for client in [client_1, client_2]:
-            assert len(app.state_holder.session_data[client.session_hash]._data) == 0
+            assert (
+                len(app.state_holder.session_data[client.session_hash].state_data) == 0
+            )
     finally:
         demo.close()
