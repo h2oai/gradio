@@ -290,6 +290,7 @@ class Client:
             headers=self.headers,
             cookies=self.cookies,
             verify=self.ssl_verify,
+            timeout=60,
         )
         if req.status_code == 503:
             raise QueueError("Queue is full! Please try again.")
