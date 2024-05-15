@@ -280,6 +280,7 @@ class Client:
                 json={**data, **hash_data},
                 headers=self.headers,
                 cookies=self.cookies,
+                timeout=60,
             )
         if req.status_code == 503:
             raise QueueError("Queue is full! Please try again.")
@@ -558,6 +559,7 @@ class Client:
                     "config": json.dumps(self.config),
                     "serialize": self.upload_files,
                 },
+                timeout=60,
             )
             if fetch.is_success:
                 info = fetch.json()["api"]
