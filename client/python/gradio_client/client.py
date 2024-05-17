@@ -1361,7 +1361,7 @@ class Job(Future):
                     and self._counter >= len(self.communicator.job.outputs)
                 ):
                     raise StopIteration()
-                time.sleep(0.001)
+            time.sleep(0.001)
 
     def result(self, timeout: float | None = None) -> Any:
         """
