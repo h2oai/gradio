@@ -140,10 +140,8 @@ class FileExplorer(Changeable, IOComponent, JSONSerializable):
         return [self._strip_root(file).split(os.path.sep) for file in (files)]
 
     @server
-    def ls(self, y=None) -> list[dict[str, str]] | None:
+    def ls(self, _=None) -> list[dict[str, str]] | None:
         """
-        Parameters:
-            y: file path as a list of strings for each directory level relative to the root.
         Returns:
             tuple of list of files in directory, then list of folders in directory
         """
