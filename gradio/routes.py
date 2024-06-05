@@ -103,6 +103,13 @@ def toorjson(value):
     )
 
 
+def is_http_url_like(possible_url: str) -> bool:
+    """
+    Check if the given string looks like an HTTP(S) URL.
+    """
+    return possible_url.startswith(("http://", "https://"))
+
+
 templates = Jinja2Templates(directory=STATIC_TEMPLATE_LIB)
 templates.env.filters["toorjson"] = toorjson
 
@@ -404,7 +411,7 @@ class App(FastAPI):
         @app.get("/file={path_or_url:path}", dependencies=[Depends(login_check)])
         async def file(path_or_url: str, request: fastapi.Request):
             blocks = app.get_blocks()
-            if client_utils.is_http_url_like(path_or_url):
+            if is_http_url_like(path_or_url):
                 return RedirectResponse(
                     url=path_or_url, status_code=status.HTTP_302_FOUND
                 )
