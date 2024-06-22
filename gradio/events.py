@@ -38,6 +38,7 @@ def set_cancel_events(
             preprocess=False,
             show_api=False,
             cancels=fn_indices_to_cancel,
+            is_cancel_function=True,
         )
 
 
@@ -320,7 +321,7 @@ class EventListener(str):
             )
             if _callback:
                 _callback(block)
-            return Dependency(block, dep, dep_index, fn)
+            return Dependency(block, dep.get_config(), dep_index, fn)
 
         event_trigger.event_name = _event_name
         event_trigger.has_trigger = _has_trigger
@@ -445,7 +446,7 @@ def on(
         trigger_mode=trigger_mode,
     )
     set_cancel_events(triggers, cancels)
-    return Dependency(None, dep, dep_index, fn)
+    return Dependency(None, dep.get_config(), dep_index, fn)
 
 
 class Events:
@@ -538,6 +539,10 @@ class Events:
     key_up = EventListener(
         "key_up",
         doc="This listener is triggered when the user presses a key while the {{ component }} is focused.",
+    )
+    apply = EventListener(
+        "apply",
+        doc="This listener is triggered when the user applies changes to the {{ component }} through an integrated UI action.",
     )
 
 

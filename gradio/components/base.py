@@ -143,13 +143,15 @@ class Component(ComponentBase, Block):
         elem_id: str | None = None,
         elem_classes: list[str] | str | None = None,
         render: bool = True,
+        key: int | str | None = None,
         load_fn: Callable | None = None,
         every: float | None = None,
     ):
         self.server_fns = [
-            value
-            for value in self.__class__.__dict__.values()
-            if callable(value) and getattr(value, "_is_server_fn", False)
+            getattr(self, value)
+            for value in dir(self.__class__)
+            if callable(getattr(self, value))
+            and getattr(getattr(self, value), "_is_server_fn", False)
         ]
 
         # Svelte components expect elem_classes to be a list
@@ -169,6 +171,7 @@ class Component(ComponentBase, Block):
             elem_classes=elem_classes,
             visible=visible,
             render=render,
+            key=key,
         )
         if isinstance(self, StreamingInput):
             self.check_streamable()

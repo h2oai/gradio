@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from gradio_client.documentation import document
 
-from gradio import Examples, utils
+from gradio import Examples, utils, wasm_utils
 from gradio.blocks import Blocks
 from gradio.components import (
     Button,
@@ -29,7 +29,7 @@ from gradio.events import Dependency, Events, on
 from gradio.exceptions import RenderError
 from gradio.flagging import CSVLogger, FlaggingCallback, FlagMethod
 from gradio.layouts import Accordion, Column, Row, Tab, Tabs
-from gradio.pipelines import load_from_pipeline
+from gradio.pipelines import load_from_js_pipeline, load_from_pipeline
 from gradio.themes import ThemeClass as Theme
 
 if TYPE_CHECKING:  # Only import for type checking (is False at runtime).
@@ -85,7 +85,10 @@ class Interface(Blocks):
             pipe = pipeline("image-classification")
             gr.Interface.from_pipeline(pipe).launch()
         """
-        interface_info = load_from_pipeline(pipeline)
+        if wasm_utils.IS_WASM:
+            interface_info = load_from_js_pipeline(pipeline)
+        else:
+            interface_info = load_from_pipeline(pipeline)
         kwargs = dict(interface_info, **kwargs)
         interface = cls(**kwargs)
         return interface
@@ -126,7 +129,7 @@ class Interface(Blocks):
         *,
         submit_btn: str | Button = "Submit",
         stop_btn: str | Button = "Stop",
-        clear_btn: str | Button = "Clear",
+        clear_btn: str | Button | None = "Clear",
         delete_cache: tuple[int, int] | None = None,
         **kwargs,
     ):
@@ -142,7 +145,7 @@ class Interface(Blocks):
             title: A title for the interface; if provided, appears above the input and output components in large font. Also used as the tab title when opened in a browser window.
             description: A description for the interface; if provided, appears above the input and output components and beneath the title in regular font. Accepts Markdown and HTML content.
             article: An expanded article explaining the interface; if provided, appears below the input and output components in regular font. Accepts Markdown and HTML content. If it is an HTTP(S) link to a downloadable remote file, the content of this file is displayed.
-            thumbnail: String path or url to image to use as display image when the web demo is shared on social media.
+            thumbnail: This parameter has been deprecated and has no effect.
             theme: A Theme object or a string representing a theme. If a string, will look for a built-in theme with that name (e.g. "soft" or "default"), or will attempt to load a theme from the Hugging Face Hub (e.g. "gradio/monochrome"). If None, will use the Default theme.
             css: Custom css as a string or path to a css file. This css will be included in the demo webpage.
             allow_flagging: One of "never", "auto", or "manual". If "never" or "auto", users will not see a button to flag an input and output. If "manual", users will see a button to flag. If "auto", every input the user submits will be automatically flagged, along with the generated output. If "manual", both the input and outputs are flagged when the user clicks flag button. This parameter can be set with environmental variable GRADIO_ALLOW_FLAGGING; otherwise defaults to "manual".
@@ -155,13 +158,13 @@ class Interface(Blocks):
             api_name: Defines how the endpoint appears in the API docs. Can be a string, None, or False. If set to a string, the endpoint will be exposed in the API docs with the given name. If None, the name of the prediction function will be used as the API endpoint. If False, the endpoint will not be exposed in the API docs and downstream apps (including those that `gr.load` this app) will not be able to use this event.
             allow_duplication: If True, then will show a 'Duplicate Spaces' button on Hugging Face Spaces.
             concurrency_limit: If set, this is the maximum number of this event that can be running simultaneously. Can be set to None to mean no concurrency_limit (any number of this event can be running simultaneously). Set to "default" to use the default concurrency limit (defined by the `default_concurrency_limit` parameter in `.queue()`, which itself is 1 by default).
-            js: Custom js or path to js file to run when demo is first loaded. This javascript will be included in the demo webpage.
+            js: Custom js as a string or path to a js file. The custom js should be in the form of a single js function. This function will automatically be executed when the page loads. For more flexibility, use the head parameter to insert js inside <script> tags.
             head: Custom html to insert into the head of the demo webpage. This can be used to add custom meta tags, scripts, stylesheets, etc. to the page.
             additional_inputs: A single Gradio component, or list of Gradio components. Components can either be passed as instantiated objects, or referred to by their string shortcuts. These components will be rendered in an accordion below the main input components. By default, no additional input components will be displayed.
             additional_inputs_accordion: If a string is provided, this is the label of the `gr.Accordion` to use to contain additional inputs. A `gr.Accordion` object can be provided as well to configure other properties of the container holding the additional inputs. Defaults to a `gr.Accordion(label="Additional Inputs", open=False)`. This parameter is only used if `additional_inputs` is provided.
             submit_btn: The button to use for submitting inputs. Defaults to a `gr.Button("Submit", variant="primary")`. This parameter does not apply if the Interface is output-only, in which case the submit button always displays "Generate". Can be set to a string (which becomes the button label) or a `gr.Button` object (which allows for more customization).
             stop_btn: The button to use for stopping the interface. Defaults to a `gr.Button("Stop", variant="stop", visible=False)`. Can be set to a string (which becomes the button label) or a `gr.Button` object (which allows for more customization).
-            clear_btn: The button to use for clearing the inputs. Defaults to a `gr.Button("Clear", variant="secondary")`. Can be set to a string (which becomes the button label) or a `gr.Button` object (which allows for more customization).
+            clear_btn: The button to use for clearing the inputs. Defaults to a `gr.Button("Clear", variant="secondary")`. Can be set to a string (which becomes the button label) or a `gr.Button` object (which allows for more customization). Can be set to None, which hides the button.
             delete_cache: A tuple corresponding [frequency, age] both expressed in number of seconds. Every `frequency` seconds, the temporary files created by this Blocks instance will be deleted if more than `age` seconds have passed since the file was created. For example, setting this to (86400, 86400) will delete temporary files every day. The cache will be deleted entirely when the server restarts. If None, no cache deletion will occur.
         """
         super().__init__(
@@ -343,7 +346,12 @@ class Interface(Blocks):
                 f"The stop_btn parameter must be a gr.Button or string, not {type(stop_btn)}"
             )
 
-        if isinstance(clear_btn, Button):
+        if clear_btn is None:
+            self.clear_btn_params = {
+                "visible": False,
+                "variant": "secondary",
+            }
+        elif isinstance(clear_btn, Button):
             self.clear_btn_params = clear_btn.recover_kwargs(clear_btn.get_config())
         elif isinstance(clear_btn, str):
             self.clear_btn_params = {
@@ -352,7 +360,7 @@ class Interface(Blocks):
             }
         else:
             raise ValueError(
-                f"The clear_btn parameter must be a gr.Button or string, not {type(clear_btn)}"
+                f"The clear_btn parameter must be a gr.Button, a string, or None, not {type(clear_btn)}"
             )
 
         self.simple_server = None
@@ -913,8 +921,8 @@ class TabbedInterface(Blocks):
             theme: A Theme object or a string representing a theme. If a string, will look for a built-in theme with that name (e.g. "soft" or "default"), or will attempt to load a theme from the Hugging Face Hub (e.g. "gradio/monochrome"). If None, will use the Default theme.
             analytics_enabled: Whether to allow basic telemetry. If None, will use GRADIO_ANALYTICS_ENABLED environment variable or default to True.
             css: Custom css as a string or path to a css file. This css will be included in the demo webpage.
-            js: Custom js or path to js file to run when demo is first loaded. This javascript will be included in the demo webpage.
-            head: Custom html to insert into the head of the demo webpage. This can be used to add custom meta tags, scripts, stylesheets, etc. to the page.
+            js: Custom js as a string or path to a js file. The custom js should in the form of a single js function. This function will automatically be executed when the page loads. For more flexibility, use the head parameter to insert js inside <script> tags.
+            head: Custom html to insert into the head of the demo webpage. This can be used to add custom meta tags, multiple scripts, stylesheets, etc. to the page.
         Returns:
             a Gradio Tabbed Interface for the given interfaces
         """

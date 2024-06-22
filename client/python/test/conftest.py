@@ -242,7 +242,7 @@ def count_generator_no_api():
 def count_generator_demo_exception():
     def count(n):
         for i in range(int(n)):
-            time.sleep(0.1)
+            time.sleep(0.01)
             if i == 5:
                 raise ValueError("Oh no!")
             yield i
@@ -444,5 +444,18 @@ def many_endpoint_demo():
             msg2.submit(noop, msg2, msg2)
             butn2 = gr.Button()
             butn2.click(noop, msg2, msg2)
+
+    return demo
+
+
+@pytest.fixture
+def max_file_size_demo():
+    with gr.Blocks() as demo:
+        file_1b = gr.File()
+        upload_status = gr.Textbox()
+
+        file_1b.upload(
+            lambda x: "Upload successful", file_1b, upload_status, api_name="upload_1b"
+        )
 
     return demo
