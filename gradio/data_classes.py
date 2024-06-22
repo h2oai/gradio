@@ -8,7 +8,7 @@ import secrets
 import shutil
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, TypedDict, Union
 
 from fastapi import Request
 from gradio_client.utils import traverse
@@ -17,6 +17,11 @@ from . import wasm_utils
 
 if not wasm_utils.IS_WASM or TYPE_CHECKING:
     from pydantic import BaseModel, RootModel, ValidationError
+
+    try:
+        from pydantic import JsonValue
+    except ImportError:
+        JsonValue = Any
 else:
     # XXX: Currently Pyodide V2 is not available on Pyodide,
     # so we install V1 for the Wasm version.
@@ -24,6 +29,8 @@ else:
 
     from pydantic import BaseModel as BaseModelV1
     from pydantic import ValidationError, schema_of
+
+    JsonValue = Any
 
     # Map V2 method calls to V1 implementations.
     # Ref: https://docs.pydantic.dev/latest/migration/#changes-to-pydanticbasemodel
@@ -103,6 +110,25 @@ class PredictBody(BaseModel):
         None  # dictionary of request headers, query parameters, url, etc. (used to to pass in request for queuing)
     )
 
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        return {
+            "title": "PredictBody",
+            "type": "object",
+            "properties": {
+                "session_hash": {"type": "string"},
+                "event_id": {"type": "string"},
+                "data": {"type": "array", "items": {"type": "object"}},
+                "event_data": {"type": "object"},
+                "fn_index": {"type": "integer"},
+                "trigger_id": {"type": "integer"},
+                "simple_format": {"type": "boolean"},
+                "batched": {"type": "boolean"},
+                "request": {"type": "object"},
+            },
+            "required": ["data"],
+        }
+
 
 class ResetBody(BaseModel):
     event_id: str
@@ -161,6 +187,12 @@ class GradioBaseModel(ABC):
         pass
 
 
+class JsonData(RootModel):
+    """JSON data returned from a component that should not be modified further."""
+
+    root: JsonValue
+
+
 class GradioModel(GradioBaseModel, BaseModel):
     @classmethod
     def from_json(cls, x) -> GradioModel:
@@ -174,6 +206,16 @@ class GradioRootModel(GradioBaseModel, RootModel):
 
 
 GradioDataModel = Union[GradioModel, GradioRootModel]
+
+
+class FileDataDict(TypedDict):
+    path: str  # server filepath
+    url: Optional[str]  # normalised server url
+    size: Optional[int]  # size in bytes
+    orig_name: Optional[str]  # original filename
+    mime_type: Optional[str]
+    is_stream: bool
+    meta: dict
 
 
 class FileData(GradioModel):

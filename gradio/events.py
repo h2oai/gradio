@@ -5,16 +5,28 @@ from __future__ import annotations
 
 import dataclasses
 from functools import partial, wraps
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Sequence,
+    Union,
+    cast,
+)
 
 from gradio_client.documentation import document
 from jinja2 import Template
 
+from gradio.data_classes import FileData, FileDataDict
+
 if TYPE_CHECKING:
     from gradio.blocks import Block, Component
 
-from gradio.context import Context
-from gradio.utils import get_cancel_function
+from gradio.context import get_blocks_context
+from gradio.utils import get_cancelled_fn_indices
 
 
 def set_cancel_events(
@@ -24,14 +36,15 @@ def set_cancel_events(
     if cancels:
         if not isinstance(cancels, list):
             cancels = [cancels]
-        cancel_fn, fn_indices_to_cancel = get_cancel_function(cancels)
+        fn_indices_to_cancel = get_cancelled_fn_indices(cancels)
 
-        if Context.root_block is None:
+        root_block = get_blocks_context()
+        if root_block is None:
             raise AttributeError("Cannot cancel outside of a gradio.Blocks context.")
 
-        Context.root_block.set_event_trigger(
+        root_block.set_event_trigger(
             triggers,
-            cancel_fn,
+            fn=None,
             inputs=None,
             outputs=None,
             queue=False,
@@ -138,10 +151,45 @@ class KeyUpData(EventData):
         """
 
 
+class DeletedFileData(EventData):
+    def __init__(self, target: Block | None, data: FileDataDict):
+        super().__init__(target, data)
+        self.file: FileData = FileData(**data)
+        """
+        The file that was deleted.
+        """
+
+
 @dataclasses.dataclass
 class EventListenerMethod:
     block: Block | None
     event_name: str
+
+
+if TYPE_CHECKING:
+    EventListenerCallable = Callable[
+        [
+            Union[Callable, None],
+            Union[Component, Sequence[Component], None],
+            Union[Block, Sequence[Block], Sequence[Component], Component, None],
+            Union[str, None, Literal[False]],
+            bool,
+            Literal["full", "minimal", "hidden"],
+            Union[bool, None],
+            bool,
+            int,
+            bool,
+            bool,
+            Union[Dict[str, Any], List[Dict[str, Any]], None],
+            Union[float, None],
+            Union[Literal["once", "multiple", "always_last"], None],
+            Union[str, None],
+            Union[int, None, Literal["default"]],
+            Union[str, None],
+            bool,
+        ],
+        Dependency,
+    ]
 
 
 class EventListener(str):
@@ -209,11 +257,11 @@ class EventListener(str):
             block: Block | None,
             fn: Callable | None | Literal["decorator"] = "decorator",
             inputs: Component | list[Component] | set[Component] | None = None,
-            outputs: Component | list[Component] | None = None,
+            outputs: Block | list[Block] | list[Component] | None = None,
             api_name: str | None | Literal[False] = None,
             scroll_to_output: bool = False,
             show_progress: Literal["full", "minimal", "hidden"] = _show_progress,
-            queue: bool | None = None,
+            queue: bool = True,
             batch: bool = False,
             max_batch_size: int = 4,
             preprocess: bool = True,
@@ -245,7 +293,7 @@ class EventListener(str):
                 js: Optional frontend js method to run before running 'fn'. Input arguments for js method are values of 'inputs' and 'outputs', return should be a list of values for output components.
                 concurrency_limit: If set, this is the maximum number of this event that can be running simultaneously. Can be set to None to mean no concurrency_limit (any number of this event can be running simultaneously). Set to "default" to use the default concurrency limit (defined by the `default_concurrency_limit` parameter in `Blocks.queue()`, which itself is 1 by default).
                 concurrency_id: If set, this is the id of the concurrency group. Events with the same concurrency_id will be limited by the lowest set concurrency_limit.
-                show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps to use this event. If fn is None, show_api will automatically be set to False.
+                show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps as well as the Clients to use this event. If fn is None, show_api will automatically be set to False.
             """
 
             if fn == "decorator":
@@ -288,12 +336,13 @@ class EventListener(str):
             if isinstance(show_progress, bool):
                 show_progress = "full" if show_progress else "hidden"
 
-            if Context.root_block is None:
+            root_block = get_blocks_context()
+            if root_block is None:
                 raise AttributeError(
                     f"Cannot call {_event_name} outside of a gradio.Blocks context."
                 )
 
-            dep, dep_index = Context.root_block.set_event_trigger(
+            dep, dep_index = root_block.set_event_trigger(
                 [EventListenerMethod(block if _has_trigger else None, _event_name)],
                 fn,
                 inputs,
@@ -329,15 +378,15 @@ class EventListener(str):
 
 
 def on(
-    triggers: Sequence[Any] | Any | None = None,
+    triggers: Sequence[EventListenerCallable] | EventListenerCallable | None = None,
     fn: Callable | None | Literal["decorator"] = "decorator",
     inputs: Component | list[Component] | set[Component] | None = None,
-    outputs: Component | list[Component] | None = None,
+    outputs: Block | list[Block] | list[Component] | None = None,
     *,
     api_name: str | None | Literal[False] = None,
     scroll_to_output: bool = False,
     show_progress: Literal["full", "minimal", "hidden"] = "full",
-    queue: bool | None = None,
+    queue: bool = True,
     batch: bool = False,
     max_batch_size: int = 4,
     preprocess: bool = True,
@@ -370,12 +419,14 @@ def on(
         js: Optional frontend js method to run before running 'fn'. Input arguments for js method are values of 'inputs', return should be a list of values for output components.
         concurrency_limit: If set, this is the maximum number of this event that can be running simultaneously. Can be set to None to mean no concurrency_limit (any number of this event can be running simultaneously). Set to "default" to use the default concurrency limit (defined by the `default_concurrency_limit` parameter in `Blocks.queue()`, which itself is 1 by default).
         concurrency_id: If set, this is the id of the concurrency group. Events with the same concurrency_id will be limited by the lowest set concurrency_limit.
-        show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps to use this event. If fn is None, show_api will automatically be set to False.
+        show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps as well as the Clients to use this event. If fn is None, show_api will automatically be set to False.
     """
     from gradio.components.base import Component
 
-    if isinstance(triggers, EventListener):
-        triggers = [triggers]
+    triggers_typed = cast(EventListener, triggers)
+
+    if isinstance(triggers_typed, EventListener):
+        triggers_typed = [triggers_typed]
     if isinstance(inputs, Component):
         inputs = [inputs]
 
@@ -412,21 +463,22 @@ def on(
 
         return Dependency(None, {}, None, wrapper)
 
-    if Context.root_block is None:
+    root_block = get_blocks_context()
+    if root_block is None:
         raise Exception("Cannot call on() outside of a gradio.Blocks context.")
     if triggers is None:
-        triggers = (
+        methods = (
             [EventListenerMethod(input, "change") for input in inputs]
             if inputs is not None
             else []
         )  # type: ignore
     else:
-        triggers = [
-            EventListenerMethod(t.__self__ if t.has_trigger else None, t.event_name)
-            for t in triggers
-        ]  # type: ignore
-    dep, dep_index = Context.root_block.set_event_trigger(
-        triggers,
+        methods = [
+            EventListenerMethod(t.__self__ if t.has_trigger else None, t.event_name)  # type: ignore
+            for t in triggers_typed
+        ]
+    dep, dep_index = root_block.set_event_trigger(
+        methods,
         fn,
         inputs,
         outputs,
@@ -445,7 +497,7 @@ def on(
         show_api=show_api,
         trigger_mode=trigger_mode,
     )
-    set_cancel_events(triggers, cancels)
+    set_cancel_events(methods, cancels)
     return Dependency(None, dep.get_config(), dep_index, fn)
 
 
@@ -543,6 +595,10 @@ class Events:
     apply = EventListener(
         "apply",
         doc="This listener is triggered when the user applies changes to the {{ component }} through an integrated UI action.",
+    )
+    delete = EventListener(
+        "delete",
+        doc="This listener is triggered when the user deletes and item from the {{ component }}. Uses event data gradio.DeletedFileData to carry `value` referring to the file that was deleted as an instance of FileData. See EventData documentation on how to use this event data",
     )
 
 

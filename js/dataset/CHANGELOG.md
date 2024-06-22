@@ -1,5 +1,60 @@
 # @gradio/dataset
 
+## 0.1.43
+
+### Dependency updates
+
+- @gradio/client@1.1.1
+- @gradio/upload@0.11.2
+
+## 0.1.42
+
+### Dependency updates
+
+- @gradio/upload@0.11.1
+- @gradio/client@1.1.0
+
+## 0.1.41
+
+### Dependency updates
+
+- @gradio/client@1.0.0
+- @gradio/upload@0.11.0
+
+## 0.1.40
+
+### Dependency updates
+
+- @gradio/upload@0.10.7
+- @gradio/client@0.20.1
+
+## 0.1.39
+
+### Fixes
+
+- [#8364](https://github.com/gradio-app/gradio/pull/8364) [`6a1b58c`](https://github.com/gradio-app/gradio/commit/6a1b58cf3e4796ccb695db5baae190c894b30df0) - Add `--table-text-color` var to fix body text in `Examples`.  Thanks @hannahblair!
+
+### Dependency updates
+
+- @gradio/client@0.20.0
+- @gradio/upload@0.10.6
+
+## 0.1.38
+
+### Dependency updates
+
+- @gradio/utils@0.4.2
+- @gradio/atoms@0.7.4
+- @gradio/upload@0.10.5
+- @gradio/client@0.19.4
+
+## 0.1.37
+
+### Dependency updates
+
+- @gradio/client@0.19.3
+- @gradio/upload@0.10.4
+
 ## 0.1.36
 
 ### Dependency updates

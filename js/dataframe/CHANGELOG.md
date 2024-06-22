@@ -1,5 +1,71 @@
 # @gradio/dataframe
 
+## 0.8.10
+
+### Dependency updates
+
+- @gradio/client@1.1.1
+- @gradio/upload@0.11.2
+- @gradio/button@0.2.43
+
+## 0.8.9
+
+### Dependency updates
+
+- @gradio/upload@0.11.1
+- @gradio/client@1.1.0
+- @gradio/button@0.2.42
+
+## 0.8.8
+
+### Dependency updates
+
+- @gradio/statustracker@0.6.0
+- @gradio/client@1.0.0
+- @gradio/upload@0.11.0
+- @gradio/button@0.2.41
+- @gradio/markdown@0.7.6
+
+## 0.8.7
+
+### Dependency updates
+
+- @gradio/upload@0.10.7
+- @gradio/client@0.20.1
+- @gradio/button@0.2.40
+
+## 0.8.6
+
+### Dependency updates
+
+- @gradio/client@0.20.0
+- @gradio/statustracker@0.6.0
+- @gradio/button@0.2.39
+- @gradio/upload@0.10.6
+- @gradio/markdown@0.7.6
+
+## 0.8.5
+
+### Dependency updates
+
+- @gradio/utils@0.4.2
+- @gradio/atoms@0.7.4
+- @gradio/statustracker@0.5.5
+- @gradio/upload@0.10.5
+- @gradio/markdown@0.7.5
+- @gradio/client@0.19.4
+- @gradio/button@0.2.38
+
+## 0.8.4
+
+### Dependency updates
+
+- @gradio/client@0.19.3
+- @gradio/statustracker@0.5.4
+- @gradio/button@0.2.37
+- @gradio/upload@0.10.4
+- @gradio/markdown@0.7.4
+
 ## 0.8.3
 
 ### Dependency updates

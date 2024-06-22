@@ -1,5 +1,78 @@
 # @gradio/multimodaltextbox
 
+## 0.4.11
+
+### Dependency updates
+
+- @gradio/client@1.1.1
+- @gradio/upload@0.11.2
+- @gradio/image@0.11.10
+
+## 0.4.10
+
+### Dependency updates
+
+- @gradio/upload@0.11.1
+- @gradio/client@1.1.0
+- @gradio/image@0.11.9
+
+## 0.4.9
+
+### Dependency updates
+
+- @gradio/statustracker@0.6.0
+- @gradio/client@1.0.0
+- @gradio/upload@0.11.0
+- @gradio/image@0.11.8
+
+## 0.4.8
+
+### Features
+
+- [#8377](https://github.com/gradio-app/gradio/pull/8377) [`341844f`](https://github.com/gradio-app/gradio/commit/341844f04efe0e7e512c7ca443f3f2b195a32fa7) - Click to preview images in chatbot.  Thanks @dawoodkhan82!
+- [#8455](https://github.com/gradio-app/gradio/pull/8455) [`a970589`](https://github.com/gradio-app/gradio/commit/a970589cf57c72650f45fbc6a82ad9c52a6e4712) - Fix multimodal textbox placeholder.  Thanks @dawoodkhan82!
+
+### Fixes
+
+- [#8369](https://github.com/gradio-app/gradio/pull/8369) [`4795c6e`](https://github.com/gradio-app/gradio/commit/4795c6e9e942b5ce489e4451ef84fa75128d89d2) - Fix multimodal textbox styling for certain themes.  Thanks @dawoodkhan82!
+
+## 0.4.7
+
+### Dependency updates
+
+- @gradio/upload@0.10.7
+- @gradio/client@0.20.1
+- @gradio/image@0.11.7
+
+## 0.4.6
+
+### Dependency updates
+
+- @gradio/client@0.20.0
+- @gradio/statustracker@0.6.0
+- @gradio/image@0.11.6
+- @gradio/upload@0.10.6
+
+## 0.4.5
+
+### Dependency updates
+
+- @gradio/utils@0.4.2
+- @gradio/atoms@0.7.4
+- @gradio/statustracker@0.5.5
+- @gradio/upload@0.10.5
+- @gradio/client@0.19.4
+- @gradio/image@0.11.5
+
+## 0.4.4
+
+### Dependency updates
+
+- @gradio/client@0.19.3
+- @gradio/statustracker@0.5.4
+- @gradio/image@0.11.4
+- @gradio/upload@0.10.4
+
 ## 0.4.3
 
 ### Dependency updates

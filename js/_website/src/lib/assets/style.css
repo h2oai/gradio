@@ -121,6 +121,20 @@
 	@apply border-orange-500 text-orange-500;
 }
 
+/* editable docs */
+
+.obj h1 {
+	@apply text-3xl font-light py-4;
+}
+.obj h2 {
+	@apply mb-2 text-lg;
+}
+.obj h3 {
+	@apply mt-8 text-xl text-orange-500 font-light;
+}
+.obj h4 {
+	@apply mt-8 text-xl text-orange-500 font-light;
+}
 /* playground */
 
 .current-playground-demo {
@@ -238,7 +252,7 @@ li > ul {
 pre > code {
 	font-weight: 500 !important;
 	border-radius: 0.25rem;
-	font-size: 0.8em !important;
+	font-size: 0.9em !important;
 }
 
 h1 > code,
@@ -247,17 +261,44 @@ h3 > code,
 h4 > code,
 h5 > code,
 h6 > code {
-	font-weight: 600 !important;
 	border: none;
 	border-radius: 0;
 	background-color: transparent;
 }
 
-h5,
-h6 {
-	margin-top: 2rem;
+h5 {
+	@apply text-gray-500;
 }
 
 .token.table {
 	display: unset;
+}
+
+strong {
+	font-weight: 600;
+}
+
+.obj a {
+	color: var(--tw-prose-links);
+	text-decoration: underline;
+	font-weight: 500;
+}
+
+.codeblock > pre {
+	font-size: 1em;
+}
+
+.obj ul > li {
+	list-style: circle;
+}
+.obj ol,
+.obj ul {
+	padding-inline-start: 40px;
+}
+
+.embedded-component .gradio-container {
+	padding: var(--size-4) 0 0 0 !important;
+}
+.embedded-component .gradio-container footer {
+	display: none !important;
 }

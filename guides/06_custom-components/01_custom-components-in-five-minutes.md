@@ -10,6 +10,7 @@ This guide will cover how to get started making custom components.
 You will need to have:
 
 * Python 3.8+ (<a href="https://www.python.org/downloads/" target="_blank">install here</a>)
+* pip 21.3+ (`python -m pip install --upgrade pip`)
 * Node.js v16.14+ (<a href="https://nodejs.dev/en/download/package-manager/" target="_blank">install here</a>)
 * npm 9+ (<a href="https://docs.npmjs.com/downloading-and-installing-node-js-and-npm/" target="_blank">install here</a>)
 * Gradio 4.0+ (`pip install --upgrade gradio`)
@@ -25,7 +26,7 @@ The Custom Components workflow consists of 4 steps: create, dev, build, and publ
 
 Each of these steps is done via the Custom Component CLI. You can invoke it with `gradio cc` or `gradio component`
 
-Tip: Run `gradio cc --help` to get a help menu of all available commands. You can also append `--help` to any command name to bring up a help page for that command, e.g. `gradio cc create --help`.
+Tip: Run `gradio cc --help` to get a help menu of all available commands. There are some commands that are not covered in this guide. You can also append `--help` to any command name to bring up a help page for that command, e.g. `gradio cc create --help`.
 
 ## 1. create
 
@@ -89,7 +90,7 @@ gradio cc build
 This will create a `tar.gz` and `.whl` file in a `dist/` subdirectory.
 If you or anyone installs that `.whl` file (`pip install <path-to-whl>`) they will be able to use your custom component in any gradio app!
 
-The `build` command will also generate documentation for your custom component. This takes the form of an interactive space and a static `README.md`. You can disable this by passing `--no-generate-docs`. You can read more about the documentation generator in [the dedicated guide](./documenting-custom-components).
+The `build` command will also generate documentation for your custom component. This takes the form of an interactive space and a static `README.md`. You can disable this by passing `--no-generate-docs`. You can read more about the documentation generator in [the dedicated guide](https://gradio.app/guides/documenting-custom-components).
 
 ## 4. publish
 
@@ -120,4 +121,4 @@ Here is an example of what publishing looks like:
 Now that you know the high-level workflow of creating custom components, you can go in depth in the next guides!
 After reading the guides, check out this [collection](https://huggingface.co/collections/gradio/custom-components-65497a761c5192d981710b12) of custom components on the HuggingFace Hub so you can learn from other's code.
 
-
+Tip: If you want to start off from someone else's custom component see this [guide](./frequently-asked-questions#do-i-always-need-to-start-my-component-from-scratch).

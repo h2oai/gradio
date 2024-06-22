@@ -1,5 +1,63 @@
 # @gradio/upload
 
+## 0.11.2
+
+### Features
+
+- [#8491](https://github.com/gradio-app/gradio/pull/8491) [`ffd53fa`](https://github.com/gradio-app/gradio/commit/ffd53fa2dcb13d564fd07aa441d4016df8d2f155) - Remove broken guide redirect.  Thanks @aliabd!
+
+### Dependency updates
+
+- @gradio/client@1.1.1
+
+## 0.11.1
+
+### Dependency updates
+
+- @gradio/upload@0.11.1
+- @gradio/client@1.1.0
+
+## 0.11.0
+
+### Features
+
+- [#8417](https://github.com/gradio-app/gradio/pull/8417) [`96d8de2`](https://github.com/gradio-app/gradio/commit/96d8de231270321da5f310768643363276df3204) - add delete event to `File` component.  Thanks @pngwn!
+
+### Dependency updates
+
+- @gradio/client@1.0.0
+- @gradio/upload@0.11.0
+
+## 0.10.7
+
+### Dependency updates
+
+- @gradio/upload@0.10.7
+- @gradio/client@0.20.1
+
+## 0.10.6
+
+### Dependency updates
+
+- @gradio/client@0.20.0
+- @gradio/upload@0.10.6
+
+## 0.10.5
+
+### Dependency updates
+
+- @gradio/utils@0.4.2
+- @gradio/atoms@0.7.4
+- @gradio/upload@0.10.5
+- @gradio/client@0.19.4
+
+## 0.10.4
+
+### Dependency updates
+
+- @gradio/client@0.19.3
+- @gradio/upload@0.10.4
+
 ## 0.10.3
 
 ### Dependency updates

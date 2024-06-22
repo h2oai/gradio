@@ -1,5 +1,72 @@
 # website
 
+## 0.31.5
+
+### Features
+
+- [#8491](https://github.com/gradio-app/gradio/pull/8491) [`ffd53fa`](https://github.com/gradio-app/gradio/commit/ffd53fa2dcb13d564fd07aa441d4016df8d2f155) - Remove broken guide redirect.  Thanks @aliabd!
+- [#8487](https://github.com/gradio-app/gradio/pull/8487) [`3a5d56e`](https://github.com/gradio-app/gradio/commit/3a5d56ea7bdbfc24357eaf8174f9275cb15fcf97) - Add Client Release Notes to Docs.  Thanks @freddyaboulton!
+
+### Dependency updates
+
+- @gradio/code@0.6.11
+
+## 0.31.4
+
+### Dependency updates
+
+- @gradio/code@0.6.10
+
+## 0.31.3
+
+### Features
+
+- [#8471](https://github.com/gradio-app/gradio/pull/8471) [`a9e6595`](https://github.com/gradio-app/gradio/commit/a9e6595817b741c3dcf1eaedf58ee4f901784e57) - Tweak meta titles and descriptions for clients.  Thanks @aliabd!
+
+### Dependency updates
+
+- @gradio/code@0.6.9
+
+## 0.31.2
+
+### Features
+
+- [#8456](https://github.com/gradio-app/gradio/pull/8456) [`881f11c`](https://github.com/gradio-app/gradio/commit/881f11c862c769c21710735604c0733e0cfefe66) - Add website banner for clients launch.  Thanks @aliabd!
+
+## 0.31.1
+
+### Dependency updates
+
+- @gradio/code@0.6.8
+
+## 0.31.0
+
+### Features
+
+- [#8403](https://github.com/gradio-app/gradio/pull/8403) [`5efd35c`](https://github.com/gradio-app/gradio/commit/5efd35c7a06d894fdcb68898bdaaf9b457e608f1) - Editable Docs.  Thanks @aliabd!
+
+### Dependency updates
+
+- @gradio/code@0.6.7
+
+## 0.30.4
+
+### Dependency updates
+
+- @gradio/code@0.6.6
+
+## 0.30.3
+
+### Features
+
+- [#8319](https://github.com/gradio-app/gradio/pull/8319) [`1f9a5f0`](https://github.com/gradio-app/gradio/commit/1f9a5f0aa395ab51731f7d2a6ef0268a319cdc1b) - Fix bad redirect breaking website build.  Thanks @aliabd!
+
+## 0.30.2
+
+### Dependency updates
+
+- @gradio/code@0.6.5
+
 ## 0.30.1
 
 ### Dependency updates

@@ -29,6 +29,7 @@
 		path: string;
 		app_id?: string;
 		fill_height?: boolean;
+		theme_hash?: number;
 	}
 
 	let id = -1;
@@ -131,7 +132,10 @@
 				css_text_stylesheet || undefined
 			);
 		}
-		await mount_css(config.root + "/theme.css", document.head);
+		await mount_css(
+			config.root + "/theme.css?v=" + config.theme_hash,
+			document.head
+		);
 		if (!config.stylesheets) return;
 
 		await Promise.all(
@@ -257,11 +261,12 @@
 	function handle_status(_status: SpaceStatus): void {
 		status = _status;
 	}
+	//@ts-ignore
+	const gradio_dev_mode = window.__GRADIO_DEV__;
+
 	onMount(async () => {
 		active_theme_mode = handle_theme_mode(wrapper);
 
-		//@ts-ignore
-		const gradio_dev_mode = window.__GRADIO_DEV__;
 		//@ts-ignore
 		const server_port = window.__GRADIO__SERVER_PORT__;
 
@@ -273,7 +278,9 @@
 				: host || space || src || location.origin;
 
 		app = await Client.connect(api_url, {
-			status_callback: handle_status
+			status_callback: handle_status,
+			with_null_state: true,
+			events: ["data", "log", "status", "render"]
 		});
 
 		if (!app.config) {
@@ -310,7 +317,8 @@
 				stream.addEventListener("reload", async (event) => {
 					app.close();
 					app = await Client.connect(api_url, {
-						status_callback: handle_status
+						status_callback: handle_status,
+						events: ["data", "log", "status", "render"]
 					});
 
 					if (!app.config) {
@@ -416,6 +424,17 @@
 			i18n={$_}
 			{autoscroll}
 		>
+			<div class="load-text" slot="additional-loading-text">
+				{#if gradio_dev_mode === "dev"}
+					<p>
+						If your custom component never loads, consult the troubleshooting <a
+							style="color: blue;"
+							href="https://www.gradio.app/guides/frequently-asked-questions#the-development-server-didnt-work-for-me"
+							>guide</a
+						>.
+					</p>
+				{/if}
+			</div>
 			<!-- todo: translate message text -->
 			<div class="error" slot="error">
 				<p><strong>{status?.message || ""}</strong></p>

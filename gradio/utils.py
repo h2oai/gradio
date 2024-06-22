@@ -5,8 +5,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import copy
-import dataclasses
 import functools
+import hashlib
 import importlib
 import importlib.util
 import inspect
@@ -46,12 +46,14 @@ from typing import (
 import anyio
 import gradio_client.utils as client_utils
 import httpx
+import orjson
 from gradio_client.documentation import document
 from typing_extensions import ParamSpec
 
 import gradio
-from gradio.context import Context
+from gradio.context import get_blocks_context
 from gradio.data_classes import FileData
+from gradio.exceptions import Error
 from gradio.strings import en
 
 if TYPE_CHECKING:  # Only import for type checking (is False at runtime).
@@ -121,12 +123,10 @@ class BaseReloader(ABC):
         assert self.running_app.blocks  # noqa: S101
         # Copy over the blocks to get new components and events but
         # not a new queue
-        self.running_app.blocks._queue.block_fns = demo.fns
         demo._queue = self.running_app.blocks._queue
         demo.max_file_size = self.running_app.blocks.max_file_size
         self.running_app.state_holder.reset(demo)
         self.running_app.blocks = demo
-        demo._queue.reload()
 
 
 class SourceFileReloader(BaseReloader):
@@ -304,6 +304,29 @@ def watchfn(reloader: SourceFileReloader):
         time.sleep(0.05)
 
 
+def deep_equal(a: Any, b: Any) -> bool:
+    """
+    Deep equality check for component values.
+
+    Prefer orjson for performance and compatibility with numpy arrays/dataframes/torch tensors.
+    If objects are not serializable by orjson, fall back to regular equality check.
+    """
+
+    def _serialize(a: Any) -> bytes:
+        return orjson.dumps(
+            a,
+            option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_PASSTHROUGH_DATETIME,
+        )
+
+    try:
+        return _serialize(a) == _serialize(b)
+    except TypeError:
+        try:
+            return a == b
+        except Exception:
+            return False
+
+
 def reassign_keys(old_blocks: Blocks, new_blocks: Blocks):
     from gradio.blocks import BlockContext
 
@@ -324,8 +347,10 @@ def reassign_keys(old_blocks: Blocks, new_blocks: Blocks):
                     old_block.__class__ == new_block.__class__
                     and old_block is not None
                     and old_block.key not in assigned_keys
-                    and json.dumps(getattr(old_block, "value", None))
-                    == json.dumps(getattr(new_block, "value", None))
+                    and deep_equal(
+                        getattr(old_block, "value", None),
+                        getattr(new_block, "value", None),
+                    )
                 ):
                     new_block.key = old_block.key
                 else:
@@ -428,15 +453,15 @@ def launch_counter() -> None:
     try:
         if not os.path.exists(JSON_PATH):
             launches = {"launches": 1}
-            with open(JSON_PATH, "w+") as j:
+            with open(JSON_PATH, "w+", encoding="utf-8") as j:
                 json.dump(launches, j)
         else:
-            with open(JSON_PATH) as j:
+            with open(JSON_PATH, encoding="utf-8") as j:
                 launches = json.load(j)
             launches["launches"] += 1
             if launches["launches"] in [25, 50, 150, 500, 1000]:
                 print(en["BETA_INVITE"])
-            with open(JSON_PATH, "w") as j:
+            with open(JSON_PATH, "w", encoding="utf-8") as j:
                 j.write(json.dumps(launches))
     except Exception:
         pass
@@ -724,7 +749,7 @@ def validate_url(possible_url: str) -> bool:
         return False
 
 
-def is_update(val):
+def is_prop_update(val):
     return isinstance(val, dict) and "update" in val.get("__type__", "")
 
 
@@ -860,7 +885,7 @@ def get_function_with_locals(
 
 async def cancel_tasks(task_ids: set[str]) -> list[str]:
     tasks = [(task, task.get_name()) for task in asyncio.all_tasks()]
-    event_ids = []
+    event_ids: list[str] = []
     matching_tasks = []
     for task, name in tasks:
         if "<gradio-sep>" not in name:
@@ -879,28 +904,19 @@ def set_task_name(task, session_hash: str, fn_index: int, event_id: str, batch: 
         task.set_name(f"{session_hash}_{fn_index}<gradio-sep>{event_id}")
 
 
-def get_cancel_function(
+def get_cancelled_fn_indices(
     dependencies: list[dict[str, Any]],
-) -> tuple[Callable, list[int]]:
-    fn_to_comp = {}
+) -> list[int]:
+    fn_indices = []
     for dep in dependencies:
-        if Context.root_block:
+        root_block = get_blocks_context()
+        if root_block:
             fn_index = next(
-                i for i, d in enumerate(Context.root_block.fns) if d.get_config() == dep
+                i for i, d in root_block.fns.items() if d.get_config() == dep
             )
-            fn_to_comp[fn_index] = [
-                Context.root_block.blocks[o] for o in dep["outputs"]
-            ]
+            fn_indices.append(fn_index)
 
-    async def cancel(session_hash: str) -> list[str]:
-        task_ids = {f"{session_hash}_{fn}" for fn in fn_to_comp}
-        event_ids = await cancel_tasks(task_ids)
-        return event_ids
-
-    return (
-        cancel,
-        list(fn_to_comp.keys()),
-    )
+    return fn_indices
 
 
 def get_type_hints(fn):
@@ -1217,12 +1233,6 @@ def get_extension_from_file_path_or_url(file_path_or_url: str) -> str:
     return file_extension[1:] if file_extension else ""
 
 
-def convert_to_dict_if_dataclass(value):
-    if dataclasses.is_dataclass(value):
-        return dataclasses.asdict(value)
-    return value
-
-
 K = TypeVar("K")
 V = TypeVar("V")
 
@@ -1298,14 +1308,21 @@ def get_upload_folder() -> str:
 
 
 def get_function_params(func: Callable) -> list[tuple[str, bool, Any]]:
+    """
+    Gets the parameters of a function as a list of tuples of the form (name, has_default, default_value).
+    Excludes *args and **kwargs, as well as args that are Gradio-specific, such as gr.Request, gr.EventData, gr.OAuthProfile, and gr.OAuthToken.
+    """
     params_info = []
     signature = inspect.signature(func)
+    type_hints = get_type_hints(func)
     for name, parameter in signature.parameters.items():
         if parameter.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
             break
+        if is_special_typed_parameter(name, type_hints):
+            continue
         if parameter.default is inspect.Parameter.empty:
             params_info.append((name, False, None))
         else:
@@ -1377,3 +1394,52 @@ def _parse_file_size(size: str | int | None) -> int | None:
     if not multiple:
         raise ValueError(f"Invalid file size unit: {unit}")
     return multiple * size_int
+
+
+def connect_heartbeat(config: dict[str, Any], blocks) -> bool:
+    from gradio.components import State
+
+    any_state = any(isinstance(block, State) for block in blocks)
+    any_unload = False
+    for dep in config["dependencies"]:
+        for target in dep["targets"]:
+            if isinstance(target, (list, tuple)) and len(target) == 2:
+                any_unload = target[1] == "unload"
+                if any_unload:
+                    break
+    return any_state or any_unload
+
+
+def deep_hash(obj):
+    """Compute a hash for a deeply nested data structure."""
+    hasher = hashlib.sha256()
+    if isinstance(obj, (int, float, str, bytes)):
+        items = obj
+    elif isinstance(obj, dict):
+        items = tuple(
+            [
+                (k, deep_hash(v))
+                for k, v in sorted(obj.items(), key=lambda x: hash(x[0]))
+            ]
+        )
+    elif isinstance(obj, (list, tuple)):
+        items = tuple(deep_hash(x) for x in obj)
+    elif isinstance(obj, set):
+        items = tuple(deep_hash(x) for x in sorted(obj, key=hash))
+    else:
+        items = str(id(obj)).encode("utf-8")
+    hasher.update(repr(items).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def error_payload(
+    error: BaseException | None, show_error: bool
+) -> dict[str, bool | str | float | None]:
+    content: dict[str, bool | str | float | None] = {"error": None}
+    show_error = show_error or isinstance(error, Error)
+    if show_error:
+        content["error"] = str(error)
+    if isinstance(error, Error):
+        content["duration"] = error.duration
+        content["visible"] = error.visible
+    return content

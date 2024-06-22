@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -41,6 +42,7 @@ from gradio import (
 from gradio.blocks_events import BlocksEvents, BlocksMeta
 from gradio.context import (
     Context,
+    LocalContext,
     get_blocks_context,
     get_render_context,
     set_render_context,
@@ -57,7 +59,7 @@ from gradio.exceptions import (
     InvalidComponentError,
 )
 from gradio.helpers import create_tracker, skip, special_args
-from gradio.state_holder import SessionState
+from gradio.state_holder import SessionState, StateHolder
 from gradio.themes import Default as DefaultTheme
 from gradio.themes import ThemeClass as Theme
 from gradio.tunneling import (
@@ -71,7 +73,7 @@ from gradio.utils import (
     TupleNoPrint,
     check_function_inputs_match,
     component_or_layout_class,
-    get_cancel_function,
+    get_cancelled_fn_indices,
     get_continuous_fn,
     get_package_version,
     get_upload_folder,
@@ -122,6 +124,7 @@ class Block:
         self.proxy_url = proxy_url
         self.share_token = secrets.token_urlsafe(32)
         self.parent: BlockContext | None = None
+        self.rendered_in: Renderable | None = None
         self.is_rendered: bool = False
         self._constructor_args: list[dict]
         self.state_session_capacity = 10000
@@ -165,6 +168,7 @@ class Block:
         """
         root_context = get_blocks_context()
         render_context = get_render_context()
+        self.rendered_in = LocalContext.renderable.get()
         if root_context is not None and self._id in root_context.blocks:
             raise DuplicateBlockError(
                 f"A block with id: {self._id} has already been rendered in the current Blocks."
@@ -232,13 +236,17 @@ class Block:
         for parameter in signature.parameters.values():
             if hasattr(self, parameter.name):
                 value = getattr(self, parameter.name)
-                config[parameter.name] = utils.convert_to_dict_if_dataclass(value)
+                if dataclasses.is_dataclass(value):
+                    value = dataclasses.asdict(value)
+                config[parameter.name] = value
         for e in self.events:
             to_add = e.config_data()
             if to_add:
                 config = {**to_add, **config}
         config.pop("render", None)
         config = {**config, "proxy_url": self.proxy_url, "name": self.get_block_class()}
+        if self.rendered_in is not None:
+            config["rendered_in"] = self.rendered_in._id
         if (_selectable := getattr(self, "_selectable", None)) is not None:
             config["_selectable"] = _selectable
         return config
@@ -467,11 +475,12 @@ class BlockFunction:
         self,
         fn: Callable | None,
         inputs: list[Component],
-        outputs: list[Component],
+        outputs: list[Block] | list[Component],
         preprocess: bool,
         postprocess: bool,
         inputs_as_dict: bool,
         targets: list[tuple[int | None, str]],
+        _id: int,
         batch: bool = False,
         max_batch_size: int = 4,
         concurrency_limit: int | None | Literal["default"] = "default",
@@ -486,13 +495,15 @@ class BlockFunction:
         trigger_after: int | None = None,
         trigger_only_on_success: bool = False,
         trigger_mode: Literal["always_last", "once", "multiple"] = "once",
-        queue: bool | None = None,
+        queue: bool = True,
         scroll_to_output: bool = False,
         show_api: bool = True,
         renderable: Renderable | None = None,
+        rendered_in: Renderable | None = None,
         is_cancel_function: bool = False,
     ):
         self.fn = fn
+        self._id = _id
         self.inputs = inputs
         self.outputs = outputs
         self.preprocess = preprocess
@@ -527,14 +538,10 @@ class BlockFunction:
             or bool(self.every)
         )
         self.renderable = renderable
+        self.rendered_in = rendered_in
 
         # We need to keep track of which events are cancel events
-        # in two places:
-        # 1. So that we can skip postprocessing for cancel events.
-        #   They return event_ids that have been cancelled but there
-        #   are no output components
-        # 2. So that we can place the ProcessCompletedMessage in the
-        #   event stream so that clients can close the stream when necessary
+        # so that the client can call the /cancel route directly
         self.is_cancel_function = is_cancel_function
 
         self.spaces_auto_wrap()
@@ -560,6 +567,7 @@ class BlockFunction:
 
     def get_config(self):
         return {
+            "id": self._id,
             "targets": self.targets,
             "inputs": [block._id for block in self.inputs],
             "outputs": [block._id for block in self.outputs],
@@ -576,6 +584,7 @@ class BlockFunction:
             "types": {
                 "continuous": self.types_continuous,
                 "generator": self.types_generator,
+                "cancel": self.is_cancel_function,
             },
             "collects_event_data": self.collects_event_data,
             "trigger_after": self.trigger_after,
@@ -583,6 +592,7 @@ class BlockFunction:
             "trigger_mode": self.trigger_mode,
             "show_api": self.show_api,
             "zerogpu": self.zero_gpu,
+            "rendered_in": self.rendered_in._id if self.rendered_in else None,
         }
 
 
@@ -643,7 +653,200 @@ class BlocksConfig:
         self._id: int = 0
         self.root_block = root_block
         self.blocks: dict[int, Component | Block] = {}
-        self.fns: list[BlockFunction] = []
+        self.fns: dict[int, BlockFunction] = {}
+        self.fn_id: int = 0
+
+    def set_event_trigger(
+        self,
+        targets: Sequence[EventListenerMethod],
+        fn: Callable | None,
+        inputs: Component | list[Component] | set[Component] | None,
+        outputs: Block | list[Block] | list[Component] | None,
+        preprocess: bool = True,
+        postprocess: bool = True,
+        scroll_to_output: bool = False,
+        show_progress: Literal["full", "minimal", "hidden"] = "full",
+        api_name: str | None | Literal[False] = None,
+        js: str | None = None,
+        no_target: bool = False,
+        queue: bool = True,
+        batch: bool = False,
+        max_batch_size: int = 4,
+        cancels: list[int] | None = None,
+        every: float | None = None,
+        collects_event_data: bool | None = None,
+        trigger_after: int | None = None,
+        trigger_only_on_success: bool = False,
+        trigger_mode: Literal["once", "multiple", "always_last"] | None = "once",
+        concurrency_limit: int | None | Literal["default"] = "default",
+        concurrency_id: str | None = None,
+        show_api: bool = True,
+        renderable: Renderable | None = None,
+        is_cancel_function: bool = False,
+    ) -> tuple[BlockFunction, int]:
+        """
+        Adds an event to the component's dependencies.
+        Parameters:
+            targets: a list of EventListenerMethod objects that define the event trigger
+            fn: Callable function
+            inputs: input list
+            outputs: output list
+            preprocess: whether to run the preprocess methods of components
+            postprocess: whether to run the postprocess methods of components
+            scroll_to_output: whether to scroll to output of dependency on trigger
+            show_progress: whether to show progress animation while running.
+            api_name: defines how the endpoint appears in the API docs. Can be a string, None, or False. If set to a string, the endpoint will be exposed in the API docs with the given name. If None (default), the name of the function will be used as the API endpoint. If False, the endpoint will not be exposed in the API docs and downstream apps (including those that `gr.load` this app) will not be able to use this event.
+            js: Optional frontend js method to run before running 'fn'. Input arguments for js method are values of 'inputs' and 'outputs', return should be a list of values for output components
+            no_target: if True, sets "targets" to [], used for the Blocks.load() event and .then() events
+            queue: If True, will place the request on the queue, if the queue has been enabled. If False, will not put this event on the queue, even if the queue has been enabled. If None, will use the queue setting of the gradio app.
+            batch: whether this function takes in a batch of inputs
+            max_batch_size: the maximum batch size to send to the function
+            cancels: a list of other events to cancel when this event is triggered. For example, setting cancels=[click_event] will cancel the click_event, where click_event is the return value of another components .click method.
+            every: Run this event 'every' number of seconds while the client connection is open. Interpreted in seconds.
+            collects_event_data: whether to collect event data for this event
+            trigger_after: if set, this event will be triggered after 'trigger_after' function index
+            trigger_only_on_success: if True, this event will only be triggered if the previous event was successful (only applies if `trigger_after` is set)
+            trigger_mode: If "once" (default for all events except `.change()`) would not allow any submissions while an event is pending. If set to "multiple", unlimited submissions are allowed while pending, and "always_last" (default for `.change()` and `.key_up()` events) would allow a second submission after the pending event is complete.
+            concurrency_limit: If set, this is the maximum number of this event that can be running simultaneously. Can be set to None to mean no concurrency_limit (any number of this event can be running simultaneously). Set to "default" to use the default concurrency limit (defined by the `default_concurrency_limit` parameter in `queue()`, which itself is 1 by default).
+            concurrency_id: If set, this is the id of the concurrency group. Events with the same concurrency_id will be limited by the lowest set concurrency_limit.
+            show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps as well as the Clients to use this event. If fn is None, show_api will automatically be set to False.
+            is_cancel_function: whether this event cancels another running event.
+        Returns: dependency information, dependency index
+        """
+        # Support for singular parameter
+        _targets = [
+            (
+                target.block._id if not no_target and target.block else None,
+                target.event_name,
+            )
+            for target in targets
+        ]
+        if isinstance(inputs, set):
+            inputs_as_dict = True
+            inputs = sorted(inputs, key=lambda x: x._id)
+        else:
+            inputs_as_dict = False
+            if inputs is None:
+                inputs = []
+            elif not isinstance(inputs, list):
+                inputs = [inputs]
+
+        if isinstance(outputs, set):
+            outputs = sorted(outputs, key=lambda x: x._id)
+        elif outputs is None:
+            outputs = []
+        elif not isinstance(outputs, list):
+            outputs = [outputs]
+
+        if fn is not None and not cancels:
+            check_function_inputs_match(fn, inputs, inputs_as_dict)
+        if every is not None and every <= 0:
+            raise ValueError("Parameter every must be positive or None")
+        if every and batch:
+            raise ValueError(
+                f"Cannot run event in a batch and every {every} seconds. "
+                "Either batch is True or every is non-zero but not both."
+            )
+
+        if every and fn:
+            fn = get_continuous_fn(fn, every)
+        elif every:
+            raise ValueError("Cannot set a value for `every` without a `fn`.")
+        if every and concurrency_limit is not None:
+            if concurrency_limit == "default":
+                concurrency_limit = None
+            else:
+                raise ValueError(
+                    "Cannot set a value for `concurrency_limit` with `every`."
+                )
+
+        if _targets[0][1] in ["change", "key_up"] and trigger_mode is None:
+            trigger_mode = "always_last"
+        elif trigger_mode is None:
+            trigger_mode = "once"
+        elif trigger_mode not in ["once", "multiple", "always_last"]:
+            raise ValueError(
+                f"Invalid value for parameter `trigger_mode`: {trigger_mode}. Please choose from: {['once', 'multiple', 'always_last']}"
+            )
+
+        _, progress_index, event_data_index = (
+            special_args(fn) if fn else (None, None, None)
+        )
+
+        # If api_name is None or empty string, use the function name
+        if api_name is None or isinstance(api_name, str) and api_name.strip() == "":
+            if fn is not None:
+                if not hasattr(fn, "__name__"):
+                    if hasattr(fn, "__class__") and hasattr(fn.__class__, "__name__"):
+                        name = fn.__class__.__name__
+                    else:
+                        name = "unnamed"
+                else:
+                    name = fn.__name__
+                api_name = "".join(
+                    [s for s in name if s not in set(string.punctuation) - {"-", "_"}]
+                )
+            elif js is not None:
+                api_name = "js_fn"
+                show_api = False
+            else:
+                api_name = "unnamed"
+                show_api = False
+
+        if api_name is not False:
+            api_name = utils.append_unique_suffix(
+                api_name,
+                [
+                    fn.api_name
+                    for fn in self.fns.values()
+                    if isinstance(fn.api_name, str)
+                ],
+            )
+        else:
+            show_api = False
+
+        # The `show_api` parameter is False if: (1) the user explicitly sets it (2) the user sets `api_name` to False
+        # or (3) the user sets `fn` to None (there's no backend function)
+
+        if collects_event_data is None:
+            collects_event_data = event_data_index is not None
+
+        rendered_in = LocalContext.renderable.get()
+
+        block_fn = BlockFunction(
+            fn,
+            inputs,
+            outputs,
+            preprocess,
+            postprocess,
+            _id=self.fn_id,
+            inputs_as_dict=inputs_as_dict,
+            targets=_targets,
+            batch=batch,
+            max_batch_size=max_batch_size,
+            concurrency_limit=concurrency_limit,
+            concurrency_id=concurrency_id,
+            tracks_progress=progress_index is not None,
+            api_name=api_name,
+            js=js,
+            show_progress=show_progress,
+            every=every,
+            cancels=cancels,
+            collects_event_data=collects_event_data,
+            trigger_after=trigger_after,
+            trigger_only_on_success=trigger_only_on_success,
+            trigger_mode=trigger_mode,
+            queue=queue,
+            scroll_to_output=scroll_to_output,
+            show_api=show_api,
+            renderable=renderable,
+            rendered_in=rendered_in,
+            is_cancel_function=is_cancel_function,
+        )
+
+        self.fns[self.fn_id] = block_fn
+        self.fn_id += 1
+        return block_fn, block_fn._id
 
     def get_config(self, renderable: Renderable | None = None):
         config = {}
@@ -660,7 +863,7 @@ class BlocksConfig:
             return {"id": block._id, "children": children_layout}
 
         if renderable:
-            root_block = self.blocks[renderable.column_id]
+            root_block = self.blocks[renderable.container_id]
         else:
             root_block = self.root_block
         config["layout"] = get_layout(root_block)
@@ -691,14 +894,18 @@ class BlocksConfig:
                 block_config["example_inputs"] = block.example_inputs()  # type: ignore
             config["components"].append(block_config)
 
-        config["dependencies"] = [fn.get_config() for fn in self.fns]
-
+        dependencies = []
+        for fn in self.fns.values():
+            if renderable is None or fn.rendered_in == renderable:
+                dependencies.append(fn.get_config())
+        config["dependencies"] = dependencies
         return config
 
     def __copy__(self):
         new = BlocksConfig(self.root_block)
         new.blocks = copy.copy(self.blocks)
         new.fns = copy.copy(self.fns)
+        new.fn_id = self.fn_id
         return new
 
 
@@ -781,6 +988,10 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         self.theme: Theme = theme
         self.theme_css = theme._get_theme_css()
         self.stylesheets = theme._stylesheets
+        theme_hasher = hashlib.sha256()
+        theme_hasher.update(self.theme_css.encode("utf-8"))
+        self.theme_hash = theme_hasher.hexdigest()
+
         self.encrypt = False
         self.share = False
         self.enable_queue = True
@@ -792,16 +1003,17 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         self.fill_height = fill_height
         self.delete_cache = delete_cache
         if css is not None and os.path.exists(css):
-            with open(css) as css_file:
+            with open(css, encoding="utf-8") as css_file:
                 self.css = css_file.read()
         else:
             self.css = css
         if js is not None and os.path.exists(js):
-            with open(js) as js_file:
+            with open(js, encoding="utf-8") as js_file:
                 self.js = js_file.read()
         else:
             self.js = js
         self.renderables: list[Renderable] = []
+        self.state_holder: StateHolder
 
         # For analytics_enabled and allow_flagging: (1) first check for
         # parameter, (2) check for env variable, (3) default to True/"manual"
@@ -877,12 +1089,8 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         self.default_config.blocks = value
 
     @property
-    def fns(self) -> list[BlockFunction]:
+    def fns(self) -> dict[int, BlockFunction]:
         return self.default_config.fns
-
-    @fns.setter
-    def fns(self, value: list[BlockFunction]):
-        self.default_config.fns = value
 
     def get_component(self, id: int) -> Component | BlockContext:
         comp = self.blocks[id]
@@ -973,7 +1181,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
 
         with Blocks(theme=theme) as blocks:
             # ID 0 should be the root Blocks component
-            original_mapping[0] = Context.root_block or blocks
+            original_mapping[0] = root_block = Context.root_block or blocks
 
             iterate_over_children(config["layout"]["children"])
 
@@ -1020,6 +1228,8 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                 ]
                 dependency.pop("status_tracker", None)
                 dependency.pop("zerogpu", None)
+                dependency.pop("id", None)
+                dependency.pop("rendered_in", None)
                 dependency["preprocess"] = False
                 dependency["postprocess"] = False
                 if is_then_event:
@@ -1046,7 +1256,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                         )
                         for t in targets
                     ]
-                dependency = blocks.set_event_trigger(
+                dependency = root_block.default_config.set_event_trigger(
                     targets=targets, fn=fn, **dependency
                 )[0]
                 if first_dependency is None:
@@ -1066,10 +1276,10 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         return self.__repr__()
 
     def __repr__(self):
-        num_backend_fns = len([d for d in self.fns if d.fn])
+        num_backend_fns = len([d for d in self.fns.values() if d.fn])
         repr = f"Gradio Blocks instance: {num_backend_fns} backend functions"
         repr += f"\n{'-' * len(repr)}"
-        for d, dependency in enumerate(self.fns):
+        for d, dependency in self.fns.items():
             if dependency.fn:
                 repr += f"\nfn_index={d}"
                 repr += "\n inputs:"
@@ -1102,7 +1312,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                 demo.unload(lambda: print("hello"))
             demo.launch()
         """
-        self.set_event_trigger(
+        self.default_config.set_event_trigger(
             targets=[EventListenerMethod(None, "unload")],
             fn=fn,
             inputs=None,
@@ -1113,7 +1323,6 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
             api_name=None,
             js=None,
             no_target=True,
-            queue=None,
             batch=False,
             max_batch_size=4,
             cancels=None,
@@ -1126,189 +1335,6 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
             concurrency_id=None,
             show_api=False,
         )
-
-    def set_event_trigger(
-        self,
-        targets: Sequence[EventListenerMethod],
-        fn: Callable | None,
-        inputs: Component | list[Component] | set[Component] | None,
-        outputs: Component | list[Component] | None,
-        preprocess: bool = True,
-        postprocess: bool = True,
-        scroll_to_output: bool = False,
-        show_progress: Literal["full", "minimal", "hidden"] = "full",
-        api_name: str | None | Literal[False] = None,
-        js: str | None = None,
-        no_target: bool = False,
-        queue: bool | None = None,
-        batch: bool = False,
-        max_batch_size: int = 4,
-        cancels: list[int] | None = None,
-        every: float | None = None,
-        collects_event_data: bool | None = None,
-        trigger_after: int | None = None,
-        trigger_only_on_success: bool = False,
-        trigger_mode: Literal["once", "multiple", "always_last"] | None = "once",
-        concurrency_limit: int | None | Literal["default"] = "default",
-        concurrency_id: str | None = None,
-        show_api: bool = True,
-        renderable: Renderable | None = None,
-        is_cancel_function: bool = False,
-    ) -> tuple[BlockFunction, int]:
-        """
-        Adds an event to the component's dependencies.
-        Parameters:
-            targets: a list of EventListenerMethod objects that define the event trigger
-            fn: Callable function
-            inputs: input list
-            outputs: output list
-            preprocess: whether to run the preprocess methods of components
-            postprocess: whether to run the postprocess methods of components
-            scroll_to_output: whether to scroll to output of dependency on trigger
-            show_progress: whether to show progress animation while running.
-            api_name: defines how the endpoint appears in the API docs. Can be a string, None, or False. If set to a string, the endpoint will be exposed in the API docs with the given name. If None (default), the name of the function will be used as the API endpoint. If False, the endpoint will not be exposed in the API docs and downstream apps (including those that `gr.load` this app) will not be able to use this event.
-            js: Optional frontend js method to run before running 'fn'. Input arguments for js method are values of 'inputs' and 'outputs', return should be a list of values for output components
-            no_target: if True, sets "targets" to [], used for the Blocks.load() event and .then() events
-            queue: If True, will place the request on the queue, if the queue has been enabled. If False, will not put this event on the queue, even if the queue has been enabled. If None, will use the queue setting of the gradio app.
-            batch: whether this function takes in a batch of inputs
-            max_batch_size: the maximum batch size to send to the function
-            cancels: a list of other events to cancel when this event is triggered. For example, setting cancels=[click_event] will cancel the click_event, where click_event is the return value of another components .click method.
-            every: Run this event 'every' number of seconds while the client connection is open. Interpreted in seconds.
-            collects_event_data: whether to collect event data for this event
-            trigger_after: if set, this event will be triggered after 'trigger_after' function index
-            trigger_only_on_success: if True, this event will only be triggered if the previous event was successful (only applies if `trigger_after` is set)
-            trigger_mode: If "once" (default for all events except `.change()`) would not allow any submissions while an event is pending. If set to "multiple", unlimited submissions are allowed while pending, and "always_last" (default for `.change()` and `.key_up()` events) would allow a second submission after the pending event is complete.
-            concurrency_limit: If set, this is the maximum number of this event that can be running simultaneously. Can be set to None to mean no concurrency_limit (any number of this event can be running simultaneously). Set to "default" to use the default concurrency limit (defined by the `default_concurrency_limit` parameter in `queue()`, which itself is 1 by default).
-            concurrency_id: If set, this is the id of the concurrency group. Events with the same concurrency_id will be limited by the lowest set concurrency_limit.
-            show_api: whether to show this event in the "view API" page of the Gradio app, or in the ".view_api()" method of the Gradio clients. Unlike setting api_name to False, setting show_api to False will still allow downstream apps to use this event. If fn is None, show_api will automatically be set to False.
-            is_cancel_function: whether this event cancels another running event.
-        Returns: dependency information, dependency index
-        """
-        # Support for singular parameter
-        _targets = [
-            (
-                target.block._id if not no_target and target.block else None,
-                target.event_name,
-            )
-            for target in targets
-        ]
-        if isinstance(inputs, set):
-            inputs_as_dict = True
-            inputs = sorted(inputs, key=lambda x: x._id)
-        else:
-            inputs_as_dict = False
-            if inputs is None:
-                inputs = []
-            elif not isinstance(inputs, list):
-                inputs = [inputs]
-
-        if isinstance(outputs, set):
-            outputs = sorted(outputs, key=lambda x: x._id)
-        elif outputs is None:
-            outputs = []
-        elif not isinstance(outputs, list):
-            outputs = [outputs]
-
-        if fn is not None and not cancels:
-            check_function_inputs_match(fn, inputs, inputs_as_dict)
-        if every is not None and every <= 0:
-            raise ValueError("Parameter every must be positive or None")
-        if every and batch:
-            raise ValueError(
-                f"Cannot run event in a batch and every {every} seconds. "
-                "Either batch is True or every is non-zero but not both."
-            )
-
-        if every and fn:
-            fn = get_continuous_fn(fn, every)
-        elif every:
-            raise ValueError("Cannot set a value for `every` without a `fn`.")
-        if every and concurrency_limit is not None:
-            if concurrency_limit == "default":
-                concurrency_limit = None
-            else:
-                raise ValueError(
-                    "Cannot set a value for `concurrency_limit` with `every`."
-                )
-
-        if _targets[0][1] in ["change", "key_up"] and trigger_mode is None:
-            trigger_mode = "always_last"
-        elif trigger_mode is None:
-            trigger_mode = "once"
-        elif trigger_mode not in ["once", "multiple", "always_last"]:
-            raise ValueError(
-                f"Invalid value for parameter `trigger_mode`: {trigger_mode}. Please choose from: {['once', 'multiple', 'always_last']}"
-            )
-
-        _, progress_index, event_data_index = (
-            special_args(fn) if fn else (None, None, None)
-        )
-
-        # If api_name is None or empty string, use the function name
-        if api_name is None or isinstance(api_name, str) and api_name.strip() == "":
-            if fn is not None:
-                if not hasattr(fn, "__name__"):
-                    if hasattr(fn, "__class__") and hasattr(fn.__class__, "__name__"):
-                        name = fn.__class__.__name__
-                    else:
-                        name = "unnamed"
-                else:
-                    name = fn.__name__
-                api_name = "".join(
-                    [s for s in name if s not in set(string.punctuation) - {"-", "_"}]
-                )
-            elif js is not None:
-                api_name = "js_fn"
-                show_api = False
-            else:
-                api_name = "unnamed"
-                show_api = False
-
-        if api_name is not False:
-            api_name = utils.append_unique_suffix(
-                api_name,
-                [fn.api_name for fn in self.fns if isinstance(fn.api_name, str)],
-            )
-        else:
-            show_api = False
-
-        # The `show_api` parameter is False if: (1) the user explicitly sets it (2) the user sets `api_name` to False
-        # or (3) the user sets `fn` to None (there's no backend function)
-
-        if collects_event_data is None:
-            collects_event_data = event_data_index is not None
-
-        block_fn = BlockFunction(
-            fn,
-            inputs,
-            outputs,
-            preprocess,
-            postprocess,
-            inputs_as_dict=inputs_as_dict,
-            targets=_targets,
-            batch=batch,
-            max_batch_size=max_batch_size,
-            concurrency_limit=concurrency_limit,
-            concurrency_id=concurrency_id,
-            tracks_progress=progress_index is not None,
-            api_name=api_name,
-            js=js,
-            show_progress=show_progress,
-            every=every,
-            cancels=cancels,
-            collects_event_data=collects_event_data,
-            trigger_after=trigger_after,
-            trigger_only_on_success=trigger_only_on_success,
-            trigger_mode=trigger_mode,
-            queue=queue,
-            scroll_to_output=scroll_to_output,
-            show_api=show_api,
-            renderable=renderable,
-            is_cancel_function=is_cancel_function,
-        )
-
-        self.fns.append(block_fn)
-        return block_fn, len(self.fns) - 1
 
     def render(self):
         root_context = get_blocks_context()
@@ -1326,13 +1352,14 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                     )
 
             root_context.blocks.update(self.blocks)
-            dependency_offset = len(root_context.fns)
+            dependency_offset = max(root_context.fns.keys(), default=-1) + 1
             existing_api_names = [
                 dep.api_name
-                for dep in root_context.fns
+                for dep in root_context.fns.values()
                 if isinstance(dep.api_name, str)
             ]
-            for dependency in self.fns:
+            for dependency in self.fns.values():
+                dependency._id += dependency_offset
                 api_name = dependency.api_name
                 if isinstance(api_name, str):
                     api_name_ = utils.append_unique_suffix(
@@ -1351,8 +1378,9 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                     updated_cancels = [
                         root_context.fns[i].get_config() for i in dependency.cancels
                     ]
-                    dependency.fn = get_cancel_function(updated_cancels)[0]
-                root_context.fns.append(dependency)
+                    dependency.cancels = get_cancelled_fn_indices(updated_cancels)
+                root_context.fns[dependency._id] = dependency
+            root_context.fn_id = max(root_context.fns.keys(), default=-1) + 1
             Context.root_block.temp_file_sets.extend(self.temp_file_sets)
             Context.root_block.proxy_urls.update(self.proxy_urls)
 
@@ -1390,7 +1418,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         """
         if api_name is not None:
             inferred_fn_index = next(
-                (i for i, d in enumerate(self.fns) if d.api_name == api_name),
+                (i for i, d in self.fns.items() if d.api_name == api_name),
                 None,
             )
             if inferred_fn_index is None:
@@ -1405,13 +1433,13 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
 
         inputs = list(inputs)
         processed_inputs = self.serialize_data(fn_index, inputs)
-        batch = self.fns[fn_index].batch
-        if batch:
+        fn = self.fns[fn_index]
+        if fn.batch:
             processed_inputs = [[inp] for inp in processed_inputs]
 
         outputs = client_utils.synchronize_async(
             self.process_api,
-            fn_index=fn_index,
+            block_fn=fn,
             inputs=processed_inputs,
             request=None,
             state={},
@@ -1419,7 +1447,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
         )
         outputs = outputs["data"]
 
-        if batch:
+        if fn.batch:
             outputs = [out[0] for out in outputs]
 
         outputs = self.deserialize_data(fn_index, outputs)
@@ -1429,7 +1457,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
 
     async def call_function(
         self,
-        fn_index: int,
+        block_fn: BlockFunction | int,
         processed_input: list[Any],
         iterator: AsyncIterator[Any] | None = None,
         requests: routes.Request | list[routes.Request] | None = None,
@@ -1448,9 +1476,10 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
             event_id: id of event in queue
             event_data: data associated with event trigger
         """
-        block_fn = self.fns[fn_index]
+        if isinstance(block_fn, int):
+            block_fn = self.fns[block_fn]
         if not block_fn.fn:
-            raise IndexError(f"function with index {fn_index} not defined.")
+            raise IndexError("function has no backend method.")
         is_generating = False
         request = requests[0] if isinstance(requests, list) else requests
         start = time.time()
@@ -1497,7 +1526,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
                 prediction = await utils.async_iteration(iterator)
                 is_generating = True
             except StopAsyncIteration:
-                n_outputs = len(self.fns[fn_index].outputs)
+                n_outputs = len(block_fn.outputs)
                 prediction = (
                     components._Keywords.FINISHED_ITERATING
                     if n_outputs == 1
@@ -1557,9 +1586,7 @@ class Blocks(BlockContext, BlocksEvents, metaclass=BlocksMeta):
 
         return predictions
 
-    def validate_inputs(self, fn_index: int, inputs: list[Any]):
-        block_fn = self.fns[fn_index]
-
+    def validate_inputs(self, block_fn: BlockFunction, inputs: list[Any]):
         dep_inputs = block_fn.inputs
 
         # This handles incorrect inputs when args are changed by a JS function
@@ -1595,15 +1622,14 @@ Received inputs:
 
     async def preprocess_data(
         self,
-        fn_index: int,
+        block_fn: BlockFunction,
         inputs: list[Any],
         state: SessionState | None,
         explicit_call: bool = False,
     ):
         state = state or SessionState(self)
-        block_fn = self.fns[fn_index]
 
-        self.validate_inputs(fn_index, inputs)
+        self.validate_inputs(block_fn, inputs)
 
         if block_fn.preprocess:
             processed_input = []
@@ -1632,11 +1658,8 @@ Received inputs:
             processed_input = inputs
         return processed_input
 
-    def validate_outputs(self, fn_index: int, predictions: Any | list[Any]):
-        block_fn = self.fns[fn_index]
-        dependency = self.fns[fn_index]
-
-        dep_outputs = dependency.outputs
+    def validate_outputs(self, block_fn: BlockFunction, predictions: Any | list[Any]):
+        dep_outputs = block_fn.outputs
 
         if not isinstance(predictions, (list, tuple)):
             predictions = [predictions]
@@ -1668,18 +1691,12 @@ Received outputs:
             )
 
     async def postprocess_data(
-        self, fn_index: int, predictions: list | dict, state: SessionState | None
-    ) -> Any:
+        self,
+        block_fn: BlockFunction,
+        predictions: list | dict,
+        state: SessionState | None,
+    ) -> list[Any]:
         state = state or SessionState(self)
-        block_fn = self.fns[fn_index]
-
-        # If the function is a cancel function, 'predictions' are the ids of
-        # the event in the queue that has been cancelled. We need these
-        # so that the server can put the ProcessCompleted message in the event stream
-        # Cancel events have no output components, so we need to return early otherise the output
-        # be None.
-        if block_fn.is_cancel_function:
-            return predictions
 
         if isinstance(predictions, dict) and len(predictions) > 0:
             predictions = convert_component_dict_to_list(
@@ -1691,7 +1708,7 @@ Received outputs:
                 predictions,
             ]
 
-        self.validate_outputs(fn_index, predictions)  # type: ignore
+        self.validate_outputs(block_fn, predictions)  # type: ignore
 
         output = []
         for i, block in enumerate(block_fn.outputs):
@@ -1706,12 +1723,12 @@ Received outputs:
                 ) from err
 
             if block.stateful:
-                if not utils.is_update(predictions[i]):
+                if not utils.is_prop_update(predictions[i]):
                     state[block._id] = predictions[i]
                 output.append(None)
             else:
                 prediction_value = predictions[i]
-                if utils.is_update(
+                if utils.is_prop_update(
                     prediction_value
                 ):  # if update is passed directly (deprecated), remove Nones
                     prediction_value = utils.delete_none(
@@ -1721,7 +1738,7 @@ Received outputs:
                 if isinstance(prediction_value, Block):
                     prediction_value = prediction_value.constructor_args.copy()
                     prediction_value["__type__"] = "update"
-                if utils.is_update(prediction_value):
+                if utils.is_prop_update(prediction_value):
                     kwargs = state[block._id].constructor_args.copy()
                     kwargs.update(prediction_value)
                     kwargs.pop("value", None)
@@ -1754,7 +1771,7 @@ Received outputs:
 
     async def handle_streaming_outputs(
         self,
-        fn_index: int,
+        block_fn: BlockFunction,
         data: list,
         session_hash: str | None,
         run: int | None,
@@ -1766,7 +1783,7 @@ Received outputs:
             self.pending_streams[session_hash][run] = {}
         stream_run = self.pending_streams[session_hash][run]
 
-        for i, block in enumerate(self.fns[fn_index].outputs):
+        for i, block in enumerate(block_fn.outputs):
             output_id = block._id
             if isinstance(block, components.StreamingOutput) and block.streaming:
                 first_chunk = output_id not in stream_run
@@ -1791,7 +1808,7 @@ Received outputs:
 
     def handle_streaming_diffs(
         self,
-        fn_index: int,
+        block_fn: BlockFunction,
         data: list,
         session_hash: str | None,
         run: int | None,
@@ -1805,7 +1822,7 @@ Received outputs:
             self.pending_diff_streams[session_hash][run] = [None] * len(data)
         last_diffs = self.pending_diff_streams[session_hash][run]
 
-        for i in range(len(self.fns[fn_index].outputs)):
+        for i in range(len(block_fn.outputs)):
             if final:
                 data[i] = last_diffs[i]
                 continue
@@ -1825,7 +1842,7 @@ Received outputs:
 
     async def process_api(
         self,
-        fn_index: int,
+        block_fn: BlockFunction | int,
         inputs: list[Any],
         state: SessionState | None = None,
         request: routes.Request | list[routes.Request] | None = None,
@@ -1854,11 +1871,14 @@ Received outputs:
             root_path: if provided, the root path of the server. All file URLs will be prefixed with this path.
         Returns: None
         """
-        block_fn = self.fns[fn_index]
-        batch = self.fns[fn_index].batch
+        if isinstance(block_fn, int):
+            block_fn = self.fns[block_fn]
+        batch = block_fn.batch
+        state_ids_to_track, hashed_values = self.get_state_ids_to_track(block_fn, state)
+        changed_state_ids = []
 
         if batch:
-            max_batch_size = self.fns[fn_index].max_batch_size
+            max_batch_size = block_fn.max_batch_size
             batch_sizes = [len(inp) for inp in inputs]
             batch_size = batch_sizes[0]
             if inspect.isasyncgenfunction(block_fn.fn) or inspect.isgeneratorfunction(
@@ -1874,11 +1894,11 @@ Received outputs:
                     f"Batch size ({batch_size}) exceeds the max_batch_size for this function ({max_batch_size})"
                 )
             inputs = [
-                await self.preprocess_data(fn_index, list(i), state, explicit_call)
+                await self.preprocess_data(block_fn, list(i), state, explicit_call)
                 for i in zip(*inputs)
             ]
             result = await self.call_function(
-                fn_index,
+                block_fn,
                 list(zip(*inputs)),
                 None,
                 request,
@@ -1889,11 +1909,11 @@ Received outputs:
             )
             preds = result["prediction"]
             data = [
-                await self.postprocess_data(fn_index, list(o), state)
+                await self.postprocess_data(block_fn, list(o), state)
                 for o in zip(*preds)
             ]
             if root_path is not None:
-                data = processing_utils.add_root_url(data, root_path, None)
+                data = processing_utils.add_root_url(data, root_path, None)  # type: ignore
             data = list(zip(*data))
             is_generating, iterator = None, None
         else:
@@ -1902,11 +1922,11 @@ Received outputs:
                 inputs = []
             else:
                 inputs = await self.preprocess_data(
-                    fn_index, inputs, state, explicit_call
+                    block_fn, inputs, state, explicit_call
                 )
             was_generating = old_iterator is not None
             result = await self.call_function(
-                fn_index,
+                block_fn,
                 inputs,
                 old_iterator,
                 request,
@@ -1915,21 +1935,28 @@ Received outputs:
                 in_event_listener,
                 state,
             )
-            data = await self.postprocess_data(fn_index, result["prediction"], state)
+            data = await self.postprocess_data(block_fn, result["prediction"], state)
+            if state:
+                changed_state_ids = [
+                    state_id
+                    for hash_value, state_id in zip(hashed_values, state_ids_to_track)
+                    if hash_value != utils.deep_hash(state[state_id])
+                ]
+
             if root_path is not None:
                 data = processing_utils.add_root_url(data, root_path, None)
             is_generating, iterator = result["is_generating"], result["iterator"]
             if is_generating or was_generating:
                 run = id(old_iterator) if was_generating else id(iterator)
                 data = await self.handle_streaming_outputs(
-                    fn_index,
+                    block_fn,
                     data,
                     session_hash=session_hash,
                     run=run,
                     root_path=root_path,
                 )
                 data = self.handle_streaming_diffs(
-                    fn_index,
+                    block_fn,
                     data,
                     session_hash=session_hash,
                     run=run,
@@ -1946,13 +1973,31 @@ Received outputs:
             "duration": result["duration"],
             "average_duration": block_fn.total_runtime / block_fn.total_runs,
             "render_config": None,
+            "changed_state_ids": changed_state_ids,
         }
         if block_fn.renderable and state:
             output["render_config"] = state.blocks_config.get_config(
                 block_fn.renderable
             )
+            output["render_config"]["render_id"] = block_fn.renderable._id
 
         return output
+
+    def get_state_ids_to_track(
+        self, block_fn: BlockFunction, state: SessionState | None
+    ) -> tuple[list[int], list]:
+        if state is None:
+            return [], []
+        state_ids_to_track = []
+        hashed_values = []
+        for block in block_fn.outputs:
+            if block.stateful and any(
+                (block._id, "change") in fn.targets for fn in self.fns.values()
+            ):
+                value = state[block._id]
+                state_ids_to_track.append(block._id)
+                hashed_values.append(utils.deep_hash(value))
+        return state_ids_to_track, hashed_values
 
     def create_limiter(self):
         self.limiter = (
@@ -1999,20 +2044,12 @@ Received outputs:
                 ),
             },
             "fill_height": self.fill_height,
+            "theme_hash": self.theme_hash,
         }
         config.update(self.default_config.get_config())
-        any_state = any(
-            isinstance(block, components.State) for block in self.blocks.values()
+        config["connect_heartbeat"] = utils.connect_heartbeat(
+            config, self.blocks.values()
         )
-        any_unload = False
-        for dep in config["dependencies"]:
-            for target in dep["targets"]:
-                if isinstance(target, (list, tuple)) and len(target) == 2:
-                    any_unload = target[1] == "unload"
-                    if any_unload:
-                        break
-        config["connect_heartbeat"] = any_state or any_unload
-
         return config
 
     def __enter__(self):
@@ -2039,13 +2076,15 @@ Received outputs:
             self.parent.children.extend(self.children)
         self.config = self.get_config_file()
         self.app = routes.App.create_app(self)
-        self.progress_tracking = any(block_fn.tracks_progress for block_fn in self.fns)
+        self.progress_tracking = any(
+            block_fn.tracks_progress for block_fn in self.fns.values()
+        )
         self.exited = True
 
     def clear(self):
         """Resets the layout of the Blocks object."""
         self.default_config.blocks = {}
-        self.default_config.fns = []
+        self.default_config.fns = {}
         self.children = []
         return self
 
@@ -2091,7 +2130,7 @@ Received outputs:
             concurrency_count=self.max_threads,
             update_intervals=status_update_rate if status_update_rate != "auto" else 1,
             max_size=max_size,
-            block_fns=self.fns,
+            blocks=self,
             default_concurrency_limit=default_concurrency_limit,
         )
         self.config = self.get_config_file()
@@ -2099,9 +2138,9 @@ Received outputs:
         return self
 
     def validate_queue_settings(self):
-        for dep in self.fns:
+        for dep in self.fns.values():
             for i in dep.cancels:
-                if not self.queue_enabled_for_fn(i):
+                if not self.fns[i].queue:
                     raise ValueError(
                         "Queue needs to be enabled! "
                         "You may get this error by either 1) passing a function that uses the yield keyword "
@@ -2145,6 +2184,7 @@ Received outputs:
         auth_dependency: Callable[[fastapi.Request], str | None] | None = None,
         max_file_size: str | int | None = None,
         _frontend: bool = True,
+        enable_monitoring: bool = False,
     ) -> tuple[FastAPI, str, str]:
         """
         Launches a simple web server that serves the demo. Can also be used to create a
@@ -2363,6 +2403,11 @@ Received outputs:
                     self.share = True
         else:
             self.share = share
+
+        if enable_monitoring:
+            print(
+                f"Monitoring URL: {self.local_url}monitoring/{self.app.analytics_key}"
+            )
 
         # If running in a colab or not able to access localhost,
         # a shareable link must be created.
@@ -2636,7 +2681,7 @@ Received outputs:
                     load_fn, every = component.load_event_to_attach
                     # Use set_event_trigger to avoid ambiguity between load class/instance method
 
-                    dep = self.set_event_trigger(
+                    dep = self.default_config.set_event_trigger(
                         [EventListenerMethod(self, "load")],
                         load_fn,
                         None,
@@ -2646,7 +2691,7 @@ Received outputs:
                         # else, let the enable_queue parameter take precedence
                         # this will raise a nice error message is every is used
                         # without queue
-                        queue=False if every is None else None,
+                        queue=every is not None,
                         every=every,
                     )[0]
                     component.load_event = dep.get_config()
@@ -2659,21 +2704,22 @@ Received outputs:
         self.is_running = True
         self.create_limiter()
 
-    def queue_enabled_for_fn(self, fn_index: int):
-        return self.fns[fn_index].queue is not False
-
-    def get_api_info(self):
+    def get_api_info(self, all_endpoints: bool = False) -> dict[str, Any] | None:
         """
         Gets the information needed to generate the API docs from a Blocks.
+        Parameters:
+            all_endpoints: If True, returns information about all endpoints, including those with show_api=False.
         """
         config = self.config
         api_info = {"named_endpoints": {}, "unnamed_endpoints": {}}
 
-        for fn in self.fns:
-            if not fn.fn or not fn.show_api or fn.api_name is False:
+        for fn in self.fns.values():
+            if not fn.fn or fn.api_name is False:
+                continue
+            if not all_endpoints and not fn.show_api:
                 continue
 
-            dependency_info = {"parameters": [], "returns": []}
+            dependency_info = {"parameters": [], "returns": [], "show_api": fn.show_api}
             fn_info = utils.get_function_params(fn.fn)  # type: ignore
             skip_endpoint = False
 

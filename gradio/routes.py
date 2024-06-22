@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import math
 import sys
+import warnings
 
 if sys.version_info >= (3, 9):
     from importlib.resources import files
@@ -77,7 +78,6 @@ from gradio.data_classes import (
     ResetBody,
     SimplePredictBody,
 )
-from gradio.exceptions import Error
 from gradio.oauth import attach_oauth
 from gradio.route_utils import (  # noqa: F401
     CustomCORSMiddleware,
@@ -165,6 +165,8 @@ class App(FastAPI):
     ):
         self.tokens = {}
         self.auth = None
+        self.analytics_key = secrets.token_urlsafe(16)
+        self.monitoring_enabled = False
         self.blocks: gradio.Blocks | None = None
         self.state_holder = StateHolder()
         self.iterators: dict[str, AsyncIterator] = {}
@@ -181,6 +183,7 @@ class App(FastAPI):
         self._asyncio_tasks: list[asyncio.Task] = []
         self.auth_dependency = auth_dependency
         self.api_info = None
+        self.all_app_info = None
         # Allow user to manually set `docs_url` and `redoc_url`
         # when instantiating an App; when they're not set, disable docs and redoc.
         kwargs.setdefault("docs_url", None)
@@ -380,7 +383,7 @@ class App(FastAPI):
                 request=request, route_path="/", root_path=app.root_path
             )
             if (app.auth is None and app.auth_dependency is None) or user is not None:
-                config = app.get_blocks().config
+                config = blocks.config
                 config = route_utils.update_root_in_config(config, root)
             elif app.auth_dependency:
                 raise HTTPException(
@@ -390,7 +393,7 @@ class App(FastAPI):
                 config = {
                     "auth_required": True,
                     "auth_message": blocks.auth_message,
-                    "space_id": app.get_blocks().space_id,
+                    "space_id": blocks.space_id,
                     "root": root,
                 }
 
@@ -398,9 +401,14 @@ class App(FastAPI):
                 template = (
                     "frontend/share.html" if blocks.share else "frontend/index.html"
                 )
+                gradio_api_info = api_info(False)
                 return templates.TemplateResponse(
                     template,
-                    {"request": request, "config": config},
+                    {
+                        "request": request,
+                        "config": config,
+                        "gradio_api_info": gradio_api_info,
+                    },
                 )
             except TemplateNotFound as err:
                 if blocks.share:
@@ -416,8 +424,11 @@ class App(FastAPI):
 
         @app.get("/info/", dependencies=[Depends(login_check)])
         @app.get("/info", dependencies=[Depends(login_check)])
-        def api_info():
-            # The api info is set in create_app
+        def api_info(all_endpoints: bool = False):
+            if all_endpoints:
+                if not app.all_app_info:
+                    app.all_app_info = app.get_blocks().get_api_info(all_endpoints=True)
+                return app.all_app_info
             if not app.api_info:
                 app.api_info = app.get_blocks().get_api_info()
             return app.api_info
@@ -467,7 +478,7 @@ class App(FastAPI):
 
             if key not in app.custom_component_hashes:
                 app.custom_component_hashes[key] = hashlib.md5(
-                    Path(path).read_text().encode()
+                    Path(path).read_text(encoding="utf-8").encode()
                 ).hexdigest()
 
             version = app.custom_component_hashes.get(key)
@@ -621,13 +632,8 @@ class App(FastAPI):
 
         @app.post("/reset/")
         @app.post("/reset")
-        async def reset_iterator(body: ResetBody):
-            if body.event_id not in app.iterators:
-                return {"success": False}
-            async with app.lock:
-                del app.iterators[body.event_id]
-                app.iterators_to_reset.add(body.event_id)
-                await app.get_blocks()._queue.clean_events(event_id=body.event_id)
+        async def reset_iterator(body: ResetBody):  # noqa: ARG001
+            # No-op, all the cancelling/reset logic handled by /cancel
             return {"success": True}
 
         @app.get("/heartbeat/{session_hash}")
@@ -677,7 +683,7 @@ class App(FastAPI):
                         )
                         unload_fn_indices = [
                             i
-                            for i, dep in enumerate(app.get_blocks().fns)
+                            for i, dep in app.get_blocks().fns.items()
                             if any(t for t in dep.targets if t[1] == "unload")
                         ]
                         for fn_index in unload_fn_indices:
@@ -688,7 +694,7 @@ class App(FastAPI):
                                 app=app,
                                 body=body,
                                 gr_request=req,
-                                fn_index_inferred=fn_index,
+                                fn=app.get_blocks().fns[fn_index],
                                 root_path=root_path,
                             )
                         # This will mark the state to be deleted in an hour
@@ -709,22 +715,19 @@ class App(FastAPI):
             request: fastapi.Request,
             username: str = Depends(get_current_user),
         ):
-            fn_index_inferred = route_utils.infer_fn_index(
-                app=app, api_name=api_name, body=body
+            fn = route_utils.get_fn(
+                blocks=app.get_blocks(), api_name=api_name, body=body
             )
 
-            if not app.get_blocks().api_open and app.get_blocks().queue_enabled_for_fn(
-                fn_index_inferred
-            ):
+            if not app.get_blocks().api_open and fn.queue:
                 raise HTTPException(
                     detail="This API endpoint does not accept direct HTTP POST requests. Please join the queue to use this API.",
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
 
             gr_request = route_utils.compile_gr_request(
-                app,
                 body,
-                fn_index_inferred=fn_index_inferred,
+                fn=fn,
                 username=username,
                 request=request,
             )
@@ -736,29 +739,14 @@ class App(FastAPI):
                     app=app,
                     body=body,
                     gr_request=gr_request,
-                    fn_index_inferred=fn_index_inferred,
+                    fn=fn,
                     root_path=root_path,
                 )
-                if (  # noqa: SIM102
-                    (blocks := app.get_blocks())
-                    .fns[fn_index_inferred]
-                    .is_cancel_function
-                ):
-                    # Need to complete the job so that the client disconnects
-                    if body.session_hash in blocks._queue.pending_messages_per_session:
-                        for event_id in output["data"]:
-                            message = ProcessCompletedMessage(
-                                output={}, success=True, event_id=event_id
-                            )
-                            blocks._queue.pending_messages_per_session[  # type: ignore
-                                body.session_hash
-                            ].put_nowait(message)
-
             except BaseException as error:
-                show_error = app.get_blocks().show_error or isinstance(error, Error)
+                content = utils.error_payload(error, app.get_blocks().show_error)
                 traceback.print_exc()
                 return JSONResponse(
-                    content={"error": str(error) if show_error else None},
+                    content=content,
                     status_code=500,
                 )
             return output
@@ -771,11 +759,13 @@ class App(FastAPI):
             request: fastapi.Request,
             username: str = Depends(get_current_user),
         ):
-            full_body = PredictBody(**body.model_dump(), simple_format=True)
-            inferred_fn_index = route_utils.infer_fn_index(
-                app=app, api_name=api_name, body=full_body
+            full_body = PredictBody(
+                **body.model_dump(), request=request, simple_format=True
             )
-            full_body.fn_index = inferred_fn_index
+            fn = route_utils.get_fn(
+                blocks=app.get_blocks(), api_name=api_name, body=full_body
+            )
+            full_body.fn_index = fn._id
             return await queue_join_helper(full_body, request, username)
 
         @app.post("/queue/join", dependencies=[Depends(login_check)])
@@ -824,13 +814,24 @@ class App(FastAPI):
             await cancel_tasks({f"{body.session_hash}_{body.fn_index}"})
             blocks = app.get_blocks()
             # Need to complete the job so that the client disconnects
-            if body.session_hash in blocks._queue.pending_messages_per_session:
+            session_open = (
+                body.session_hash in blocks._queue.pending_messages_per_session
+            )
+            event_running = (
+                body.event_id
+                in blocks._queue.pending_event_ids_session.get(body.session_hash, {})
+            )
+            if session_open and event_running:
                 message = ProcessCompletedMessage(
                     output={}, success=True, event_id=body.event_id
                 )
                 blocks._queue.pending_messages_per_session[
                     body.session_hash
                 ].put_nowait(message)
+            if body.event_id in app.iterators:
+                async with app.lock:
+                    del app.iterators[body.event_id]
+                    app.iterators_to_reset.add(body.event_id)
             return {"success": True}
 
         @app.get("/call/{api_name}/{event_id}", dependencies=[Depends(login_check)])
@@ -863,7 +864,7 @@ class App(FastAPI):
             session_hash: str,
         ):
             def process_msg(message: EventMessage) -> str:
-                return f"data: {orjson.dumps(message.model_dump()).decode('utf-8')}\n\n"
+                return f"data: {orjson.dumps(message.model_dump(), default=str).decode('utf-8')}\n\n"
 
             return await queue_data_helper(request, session_hash, process_msg)
 
@@ -1172,6 +1173,34 @@ class App(FastAPI):
             else:
                 return "User-agent: *\nDisallow: "
 
+        @app.get("/monitoring", dependencies=[Depends(login_check)])
+        async def analytics_login(request: fastapi.Request):
+            root_url = route_utils.get_root_url(
+                request=request, route_path="/monitoring", root_path=app.root_path
+            )
+            monitoring_url = f"{root_url}/monitoring/{app.analytics_key}"
+            print(f"* Monitoring URL: {monitoring_url} *")
+            return HTMLResponse("See console for monitoring URL.")
+
+        @app.get("/monitoring/{key}")
+        async def analytics_dashboard(key: str):
+            if key == app.analytics_key:
+                analytics_url = f"/monitoring/{app.analytics_key}/dashboard"
+                if not app.monitoring_enabled:
+                    from gradio.monitoring_dashboard import data
+                    from gradio.monitoring_dashboard import demo as dashboard
+
+                    mount_gradio_app(app, dashboard, path=analytics_url)
+                    dashboard._queue.start()
+                    analytics = app.get_blocks()._queue.event_analytics
+                    data["data"] = analytics
+                    app.monitoring_enabled = True
+                return RedirectResponse(
+                    url=analytics_url, status_code=status.HTTP_302_FOUND
+                )
+            else:
+                raise HTTPException(status_code=403, detail="Invalid key.")
+
         return app
 
 
@@ -1265,6 +1294,12 @@ def mount_gradio_app(
         app = gr.mount_gradio_app(app, io, path="/gradio")
         # Then run `uvicorn run:app` from the terminal and navigate to http://localhost:8000/gradio.
     """
+    if favicon_path is not None and path != "/":
+        warnings.warn(
+            "The 'favicon_path' parameter is set but will be ignored because 'path' is not '/'. "
+            "Please add the favicon directly to your FastAPI app."
+        )
+
     blocks.dev_mode = False
     blocks.max_file_size = utils._parse_file_size(max_file_size)
     blocks.config = blocks.get_config_file()
