@@ -576,6 +576,7 @@ class Client:
                     "config": json.dumps(self.config),
                     "serialize": self.upload_files,
                 },
+                timeout=60,
             )
             if fetch.is_success:
                 info = fetch.json()["api"]
@@ -1477,7 +1478,7 @@ class Job(Future):
                     and self._counter >= len(self.communicator.job.outputs)
                 ):
                     raise StopIteration()
-                time.sleep(0.001)
+            time.sleep(0.001)
 
     def result(self, timeout: float | None = None) -> Any:
         """
