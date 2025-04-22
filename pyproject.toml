@@ -7,7 +7,7 @@ requires = [
 build-backend = "hatchling.build"
 
 [project]
-name = "gradio"
+name = "gradio_clean"
 dynamic = ["version", "dependencies", "optional-dependencies", "readme"]
 description = "Python library for easily interacting with trained machine learning models"
 license = "Apache-2.0"
@@ -77,6 +77,9 @@ artifacts = [
   "/gradio/node",
   "/gradio/py.typed",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["gradio"]
 
 [tool.hatch.build.targets.lite]
 artifacts = ["!gradio/templates", "!*.pyi", "!/gradio/test_data", "!/gradio/_frontend_code", "!/gradio/node"]
